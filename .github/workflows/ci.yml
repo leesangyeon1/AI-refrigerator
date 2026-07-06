@@ -1,0 +1,49 @@
+name: CI
+
+on:
+  push:
+    branches: [dev, qa]
+  pull_request:
+    branches: [qa, main]
+
+jobs:
+  build:
+    name: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Syntax check
+        run: |
+          node --check server.js
+          node --check public/app.js
+
+      - name: Validate catalog + presets JSON
+        run: |
+          node -e "const c=require('./data/catalog.json');const ids=c.map(i=>i.id);if(new Set(ids).size!==ids.length)throw new Error('duplicate catalog ids');const T=new Set(['skill','plugin','mcp','agent','md','tool','cli']);for(const i of c){if(!i.id||!i.name||!T.has(i.type))throw new Error('bad item '+JSON.stringify(i).slice(0,80))}console.log('catalog OK',c.length)"
+          node -e "const fs=require('fs'),cat=new Set(require('./data/catalog.json').map(i=>i.id));for(const f of fs.readdirSync('presets')){if(!f.endsWith('.json'))continue;const p=JSON.parse(fs.readFileSync('presets/'+f,'utf8'));if(!p.id||!Array.isArray(p.items))throw new Error('bad preset '+f);for(const id of p.items)if(!cat.has(id))throw new Error(f+' references unknown item '+id)}console.log('presets OK')"
+
+      - name: Smoke test (server boots + core endpoints + CSRF guard)
+        run: |
+          PORT=4939 node server.js --no-open &
+          SRV=$!
+          for i in $(seq 1 20); do
+            curl -sf -H 'Host: 127.0.0.1:4939' http://127.0.0.1:4939/api/catalog >/dev/null 2>&1 && break
+            sleep 0.5
+          done
+          fail=0
+          for ep in catalog presets status ai-clis state config; do
+            code=$(curl -s -o /dev/null -w '%{http_code}' -H 'Host: 127.0.0.1:4939' http://127.0.0.1:4939/api/$ep)
+            echo "/api/$ep -> $code"
+            [ "$code" = 200 ] || fail=1
+          done
+          code=$(curl -s -o /dev/null -w '%{http_code}' -X POST \
+            -H 'Host: 127.0.0.1:4939' -H 'Origin: https://evil.example' -H 'Content-Type: application/json' \
+            -d '{}' http://127.0.0.1:4939/api/config)
+          echo "cross-origin POST /api/config -> $code (expect 403)"
+          [ "$code" = 403 ] || fail=1
+          kill $SRV 2>/dev/null || true
+          exit $fail
