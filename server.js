@@ -792,12 +792,29 @@ async function handleApply(req, res) {
     await fsp.mkdir(SESSION_DIR, { recursive: true });
     const settingsPath = path.join(SESSION_DIR, `${preset.id}.settings.json`);
     await writeJsonFile(settingsPath, { enabledPlugins: Object.fromEntries(cls.pluginItems.map((i) => [i.plugin, true])) });
+    // Session scope enables plugins AND MCP servers: plugins via --settings,
+    // MCP servers via --mcp-config (both are per-session, nothing permanent).
+    let command = `claude --settings ${settingsPath}`;
+    let mcpPath = null;
+    if (cls.mcpItems.length) {
+      mcpPath = path.join(SESSION_DIR, `${preset.id}.mcp.json`);
+      await writeJsonFile(mcpPath, { mcpServers: Object.fromEntries(cls.mcpItems.map((i) => [i.id, i.mcpConfig])) });
+      command += ` --mcp-config ${mcpPath}`;
+    }
     await recordApply(preset.id, 'session', settingsPath);
+    // Skills / tools / agents / md can't be "enabled" per-session — they must be
+    // installed. Surface them so the UI can point the user to the install script.
+    const needInstall = cls.resolved.filter(
+      (it) => !(it.type === 'plugin' && it.plugin) && !(it.mcpConfig && typeof it.mcpConfig === 'object' && it.mcpConfig.command),
+    );
     return ok(res, {
       settingsPath,
-      command: `claude --settings ${settingsPath}`,
-      aliasLine: `alias cc-${preset.id}='claude --settings ${settingsPath}'`,
+      mcpPath,
+      command,
+      aliasLine: `alias cc-${preset.id}='${command}'`,
       pluginCount: cls.pluginItems.length,
+      mcpCount: cls.mcpItems.length,
+      needInstall: needInstall.map((i) => ({ id: i.id, name: i.name, type: i.type, install: i.install || null })),
     });
   }
 
