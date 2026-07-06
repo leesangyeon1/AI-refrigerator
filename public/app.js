@@ -383,41 +383,50 @@ async function renderSessions() {
     el.innerHTML = '<div class="empty-state">Failed to load sessions.</div>';
     return;
   }
-  const sess = d.sessions || [];
+  const running = d.running || [];
+  const configs = d.configs || [];
   const cnt = $('#sessionCount');
-  if (cnt) cnt.textContent = sess.length ? `(${sess.filter(s => s.running).length} open / ${sess.length})` : '';
-  if (!sess.length) {
-    el.innerHTML = '<div class="empty-state">No session configs yet. Generate one in <a href="#apply">Apply &amp; Export → Session</a> 🎯</div>';
-    return;
-  }
+  if (cnt) cnt.textContent = `(${running.length} running)`;
   const chip = (label, arr, cls) => (arr && arr.length) ? `<span class="sum-chip"><span class="badge ${cls}">${label}</span> ${arr.length}</span>` : '';
   const line = (k, arr) => (arr && arr.length) ? `<div class="kv"><span class="k">${k}</span><span class="muted small">${arr.map(esc).join(', ')}</span></div>` : '';
-  el.innerHTML = sess.map(s => {
+  const chips = (b) => `<div class="sum-chips">${chip('Plugin', b.plugin, 'type-plugin')}${chip('MCP', b.mcp, 'type-mcp')}${chip('Skill', b.skill, 'type-skill')}${chip('Agent', b.agent, 'type-agent')}${chip('CLAUDE.md', b.md, 'type-md')}${chip('Tool', b.tool, 'type-tool')}${chip('CLI', b.cli, 'type-cli')}</div>`;
+  const modeBadge = { preset: '🎯 Preset', resume: '↩ Resumed', continue: '▸ Continued', fresh: '✦ New' };
+
+  let html = '';
+  html += running.length ? running.map(s => {
     const b = s.breakdown || {};
+    const isPreset = s.mode === 'preset';
     return `<div class="item-card" style="margin-bottom:8px">
       <div class="item-top">
-        <span class="item-name">🎯 ${esc(s.presetName)}${s.presetExists ? '' : ' <span class="muted small">(preset deleted)</span>'}</span>
-        <span class="pill ${s.running ? 'pill-on' : 'pill-off'}">${s.running ? '● Open' : '○ Not running'}</span>
+        <span class="item-name">🖥️ ${esc(s.presetName || s.label)} <span class="muted small">· pid ${esc(String(s.pid))}</span></span>
+        <span class="pill pill-on">● Running</span>
       </div>
-      <div class="sum-chips">
-        ${chip('Plugin', b.plugin, 'type-plugin')}
-        ${chip('MCP', b.mcp, 'type-mcp')}
-        ${chip('Skill', b.skill, 'type-skill')}
-        ${chip('Agent', b.agent, 'type-agent')}
-        ${chip('CLAUDE.md', b.md, 'type-md')}
-        ${chip('Tool', b.tool, 'type-tool')}
-        ${chip('CLI', b.cli, 'type-cli')}
-      </div>
-      <div class="kv"><span class="k">Applied now</span><span>${s.plugins.length} plugin(s) · ${s.mcpServers.length} MCP server(s)${s.generatedAt ? ' · ' + esc(fmtTime(s.generatedAt)) : ''}</span></div>
-      ${line('Plugins', b.plugin)}
-      ${line('MCP', b.mcp)}
-      ${line('Skills', b.skill)}
-      ${line('Agents', b.agent)}
-      ${line('CLAUDE.md', b.md)}
-      ${(b.tool && b.tool.length) || (b.cli && b.cli.length) ? line('Tools/CLI', [...(b.tool || []), ...(b.cli || [])]) : ''}
-      <div class="code-row"><code>${esc(s.command)}</code><button class="btn btn-sm" data-action="copy-text" data-copy="${esc(s.command)}">Copy</button></div>
+      <div class="kv"><span class="k">Folder</span><span class="muted small">${esc(s.cwd || 'unknown')}</span></div>
+      <div class="kv"><span class="k">Type</span><span>${esc(modeBadge[s.mode] || 'Session')}${s.resume ? ' <span class="muted small">' + esc(s.resume.slice(0, 12)) + '</span>' : ''}</span></div>
+      ${isPreset ? `${chips(b)}
+        <div class="kv"><span class="k">Applied</span><span>${s.plugins.length} plugin(s) · ${s.mcpServers.length} MCP server(s)</span></div>
+        ${line('Plugins', b.plugin)}${line('MCP', b.mcp)}${line('Skills', b.skill)}${line('Agents', b.agent)}${line('CLAUDE.md', b.md)}`
+      : `<div class="muted small">Not launched from a refrigerator preset — its plugins/skills aren't tracked here.</div>`}
     </div>`;
-  }).join('');
+  }).join('') : '<div class="empty-state">No running <code>claude</code> CLI sessions detected right now.</div>';
+
+  const idle = configs.filter(c => !c.running);
+  if (idle.length) {
+    html += `<div class="muted small" style="margin:12px 0 6px">🎯 Generated session presets (not running)</div>`;
+    html += idle.map(c => {
+      const b = c.breakdown || {};
+      return `<div class="item-card" style="margin-bottom:8px">
+        <div class="item-top">
+          <span class="item-name">🎯 ${esc(c.presetName)}${c.presetExists ? '' : ' <span class="muted small">(preset deleted)</span>'}</span>
+          <span class="pill pill-off">○ Not running</span>
+        </div>
+        ${chips(b)}
+        <div class="kv"><span class="k">Enables</span><span>${c.plugins.length} plugin(s) · ${c.mcpServers.length} MCP server(s)</span></div>
+        <div class="code-row"><code>${esc(c.command)}</code><button class="btn btn-sm" data-action="copy-text" data-copy="${esc(c.command)}">Copy</button></div>
+      </div>`;
+    }).join('');
+  }
+  el.innerHTML = html;
 }
 
 async function quickSession(presetId, btn) {

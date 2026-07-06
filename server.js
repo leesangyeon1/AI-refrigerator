@@ -920,58 +920,135 @@ async function handleStateGet(res) {
   ok(res, raw && typeof raw === 'object' ? raw : { ...DEFAULT_STATE });
 }
 
-async function handleSessions(res) {
-  let files;
-  try {
-    files = (await fsp.readdir(SESSION_DIR)).filter((f) => f.endsWith('.settings.json'));
-  } catch {
-    return ok(res, { sessions: [] });
+function emptyBreakdown() {
+  return { plugin: [], mcp: [], skill: [], agent: [], md: [], tool: [], cli: [] };
+}
+function buildBreakdown(preset, byId) {
+  const b = emptyBreakdown();
+  for (const iid of (preset && preset.items) || []) {
+    const it = byId.get(iid);
+    if (it && b[it.type]) b[it.type].push(it.name || iid);
   }
+  return b;
+}
+function parseClaudeArgs(args) {
+  const settings = args.match(/--settings\s+(\S+)/);
+  const mcp = args.match(/--mcp-config\s+(\S+)/);
+  const resume = args.match(/--resume\s+(\S+)/) || args.match(/(?:^|\s)-r\s+(\S+)/);
+  const cont = /(?:^|\s)(--continue|-c)(?:\s|$)/.test(args);
+  return { settingsPath: settings ? settings[1] : null, mcpPath: mcp ? mcp[1] : null, resume: resume ? resume[1] : null, continue: cont };
+}
+
+async function handleSessions(res) {
   const items = await loadMergedCatalog();
   const byId = new Map(items.map((i) => [i.id, i]));
-  // Best-effort detection of running `claude --settings <path>` processes (macOS/Linux).
-  const ps = await run('ps', ['-Ao', 'args='], { timeout: 5000 });
-  const psOut = ps.ok ? ps.stdout || '' : '';
-  const sessions = [];
-  for (const f of files) {
-    const id = f.slice(0, -'.settings.json'.length);
-    const settingsPath = path.join(SESSION_DIR, f);
-    const settings = (await readJsonOrNull(settingsPath)) || {};
-    const plugins = Object.entries(settings.enabledPlugins || {}).filter(([, v]) => v).map(([k]) => k);
-    const mcpPath = path.join(SESSION_DIR, `${id}.mcp.json`);
-    const mcpRaw = await readJsonOrNull(mcpPath);
-    const mcpServers = mcpRaw && mcpRaw.mcpServers && typeof mcpRaw.mcpServers === 'object' ? Object.keys(mcpRaw.mcpServers) : [];
-    let generatedAt = null;
-    try {
-      generatedAt = (await fsp.stat(settingsPath)).mtime.toISOString();
-    } catch {}
-    // Full breakdown from the source preset (which skills/agents/md/tools it came from)
-    const preset = await loadPreset(id);
-    const breakdown = { plugin: [], mcp: [], skill: [], agent: [], md: [], tool: [], cli: [] };
-    if (preset) {
-      for (const iid of preset.items || []) {
-        const it = byId.get(iid);
-        if (it && breakdown[it.type]) breakdown[it.type].push(it.name || iid);
+
+  // 1) Enumerate ALL running `claude` CLI processes (not the desktop app / plugin procs / this server)
+  const ps = await run('ps', ['-Ao', 'pid=,args='], { timeout: 6000 });
+  const procs = [];
+  if (ps.ok) {
+    for (const raw of (ps.stdout || '').split('\n')) {
+      const line = raw.trim();
+      const m = line.match(/^(\d+)\s+(.*)$/);
+      if (!m) continue;
+      const pid = m[1];
+      const args = m[2];
+      const isCli =
+        /(^|\/)claude(\s|$)/.test(args) &&
+        !args.includes('/Applications/Claude.app') &&
+        !args.includes('Claude Helper') &&
+        !/\bbun run\b/.test(args) &&
+        !args.includes('AI-refrigerator/server.js') &&
+        !/claude (plugin|mcp)\b/.test(args) &&
+        !args.includes('--version');
+      if (isCli) procs.push({ pid, args });
+    }
+  }
+
+  // 2) Working directory per process (best effort, batched)
+  const cwds = {};
+  if (procs.length) {
+    const ls = await run('lsof', ['-a', '-d', 'cwd', '-Fn', '-p', procs.map((p) => p.pid).join(',')], { timeout: 6000 });
+    if (ls.ok) {
+      let cur = null;
+      for (const l of (ls.stdout || '').split('\n')) {
+        if (l.startsWith('p')) cur = l.slice(1);
+        else if (l.startsWith('n') && cur) cwds[cur] = l.slice(1);
       }
     }
-    let command = `claude --settings ${settingsPath}`;
-    if (mcpServers.length) command += ` --mcp-config ${mcpPath}`;
-    sessions.push({
-      id,
-      presetName: preset ? preset.name || id : id,
-      presetExists: Boolean(preset),
-      settingsPath,
-      mcpPath: mcpServers.length ? mcpPath : null,
-      generatedAt,
-      running: psOut.includes(settingsPath),
-      command,
-      plugins,
-      mcpServers,
-      breakdown,
-    });
   }
-  sessions.sort((a, b) => (b.generatedAt || '').localeCompare(a.generatedAt || ''));
-  ok(res, { sessions });
+
+  // 3) Shape each running session
+  const running = [];
+  for (const p of procs) {
+    const a = parseClaudeArgs(p.args);
+    let mode = 'fresh';
+    let label = 'New session';
+    if (a.settingsPath && a.settingsPath.includes(path.join('.ai-refrigerator', 'session-presets'))) {
+      mode = 'preset';
+    } else if (a.resume) {
+      mode = 'resume';
+      label = `Resumed · ${a.resume.slice(0, 8)}`;
+    } else if (a.continue) {
+      mode = 'continue';
+      label = 'Continued session';
+    }
+    const s = {
+      pid: p.pid,
+      cwd: cwds[p.pid] || null,
+      mode,
+      label,
+      settingsPath: a.settingsPath,
+      mcpPath: a.mcpPath,
+      resume: a.resume || null,
+      presetName: null,
+      plugins: [],
+      mcpServers: [],
+      breakdown: emptyBreakdown(),
+    };
+    if (mode === 'preset') {
+      const base = path.basename(a.settingsPath);
+      const id = base.endsWith('.settings.json') ? base.slice(0, -'.settings.json'.length) : null;
+      const preset = id ? await loadPreset(id) : null;
+      s.presetName = preset ? preset.name || id : id;
+      s.label = s.presetName || 'Preset session';
+      if (preset) s.breakdown = buildBreakdown(preset, byId);
+      const st = (await readJsonOrNull(a.settingsPath)) || {};
+      s.plugins = Object.entries(st.enabledPlugins || {}).filter(([, v]) => v).map(([k]) => k);
+      const mc = a.mcpPath ? await readJsonOrNull(a.mcpPath) : null;
+      s.mcpServers = mc && mc.mcpServers ? Object.keys(mc.mcpServers) : [];
+    }
+    running.push(s);
+  }
+
+  // 4) Refrigerator-generated session configs (available to launch), flagged if running
+  const configs = [];
+  try {
+    for (const f of (await fsp.readdir(SESSION_DIR)).filter((x) => x.endsWith('.settings.json'))) {
+      const id = f.slice(0, -'.settings.json'.length);
+      const settingsPath = path.join(SESSION_DIR, f);
+      const settings = (await readJsonOrNull(settingsPath)) || {};
+      const plugins = Object.entries(settings.enabledPlugins || {}).filter(([, v]) => v).map(([k]) => k);
+      const mcpPath = path.join(SESSION_DIR, `${id}.mcp.json`);
+      const mcpRaw = await readJsonOrNull(mcpPath);
+      const mcpServers = mcpRaw && mcpRaw.mcpServers ? Object.keys(mcpRaw.mcpServers) : [];
+      const preset = await loadPreset(id);
+      let command = `claude --settings ${settingsPath}`;
+      if (mcpServers.length) command += ` --mcp-config ${mcpPath}`;
+      configs.push({
+        id,
+        presetName: preset ? preset.name || id : id,
+        presetExists: Boolean(preset),
+        command,
+        plugins,
+        mcpServers,
+        breakdown: preset ? buildBreakdown(preset, byId) : emptyBreakdown(),
+        running: running.some((r) => r.settingsPath === settingsPath),
+      });
+    }
+  } catch {}
+
+  ok(res, { running, configs });
 }
 
 // ── Static files ──────────────────────────────────────────
