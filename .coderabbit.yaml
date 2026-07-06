@@ -1,0 +1,18 @@
+# CodeRabbit configuration — https://docs.coderabbit.ai/reference/configuration
+language: en-US
+reviews:
+  profile: chill
+  request_changes_workflow: false
+  high_level_summary: true
+  review_status: true
+  poem: false
+  auto_review:
+    enabled: true
+    drafts: false
+    # Review PRs into every branch in our flow, not just the default branch.
+    base_branches:
+      - dev
+      - qa
+      - main
+chat:
+  auto_reply: true

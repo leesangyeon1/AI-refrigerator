@@ -1,0 +1,12 @@
+{
+  "cleanUrls": true,
+  "rewrites": [
+    { "source": "/api/catalog", "destination": "/api-static/catalog.json" },
+    { "source": "/api/presets", "destination": "/api-static/presets.json" },
+    { "source": "/api/status", "destination": "/api-static/status.json" },
+    { "source": "/api/state", "destination": "/api-static/state.json" },
+    { "source": "/api/config", "destination": "/api-static/config.json" },
+    { "source": "/api/sessions", "destination": "/api-static/sessions.json" },
+    { "source": "/api/ai-clis", "destination": "/api-static/ai-clis.json" }
+  ]
+}
