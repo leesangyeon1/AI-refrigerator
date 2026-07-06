@@ -1208,15 +1208,19 @@ function renderModePanel() {
 
   if (A.mode === 'session') {
     let html = `<div class="panel"><div class="panel-head"><h2>🎯 Session Apply</h2></div>
-      <p class="muted small">Creates a <code>settings.json</code> with only the preset's plugins enabled and runs it via <code>claude --settings</code>. Nothing is permanently changed.</p>
+      <p class="muted small">Enables the preset's <strong>plugins</strong> (via <code>--settings</code>) and <strong>MCP servers</strong> (via <code>--mcp-config</code>) for one <code>claude</code> session. Nothing is permanently changed. Skills, tools and agents can't be session-enabled — install them with the <strong>install.sh</strong> export (Export section below) or Project apply.</p>
       <div class="row-end"><button class="btn btn-primary" data-action="apply-session">Generate session settings</button></div>`;
     if (A.session) {
+      const S2 = A.session;
+      const ni = S2.needInstall || [];
       html += `<div class="result-box ok">
         <h4>✅ Session settings generated</h4>
-        <div class="kv"><span class="k">Settings file</span><code>${esc(A.session.settingsPath || '')}</code></div>
-        <div class="kv"><span class="k">Plugins</span><span>${esc(String(A.session.pluginCount ?? 0))} active</span></div>
-        <div class="code-row"><code>${esc(A.session.command || '')}</code><button class="btn btn-sm" data-action="copy-text" data-copy="${esc(A.session.command || '')}">Copy</button></div>
-        <div class="code-row"><code>${esc(A.session.aliasLine || '')}</code><button class="btn btn-sm" data-action="copy-text" data-copy="${esc(A.session.aliasLine || '')}">Copy</button></div>
+        <div class="kv"><span class="k">Applied</span><span>${esc(String(S2.pluginCount ?? 0))} plugin(s) · ${esc(String(S2.mcpCount ?? 0))} MCP server(s)</span></div>
+        <div class="kv"><span class="k">Settings file</span><code>${esc(S2.settingsPath || '')}</code></div>
+        ${S2.mcpPath ? `<div class="kv"><span class="k">MCP config</span><code>${esc(S2.mcpPath)}</code></div>` : ''}
+        <div class="code-row"><code>${esc(S2.command || '')}</code><button class="btn btn-sm" data-action="copy-text" data-copy="${esc(S2.command || '')}">Copy</button></div>
+        <div class="code-row"><code>${esc(S2.aliasLine || '')}</code><button class="btn btn-sm" data-action="copy-text" data-copy="${esc(S2.aliasLine || '')}">Copy</button></div>
+        ${ni.length ? `<div class="warn-box" style="margin-top:6px">⚠️ ${ni.length} item(s) can't be session-enabled (skills/tools/agents) and need installation: ${ni.map(i => esc(i.name)).join(', ')}. Use the install.sh export below.</div>` : ''}
       </div>`;
     }
     html += '</div>';
