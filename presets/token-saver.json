@@ -4,12 +4,10 @@
   "emoji": "🪙",
   "description": "An all-in-one for cutting tokens and costs. Output compression, context compression, routing, and cost tracking.",
   "items": [
-    "rtk",
-    "headroom",
     "tokensave",
     "routellm",
     "tokencost"
   ],
   "createdAt": "2026-07-05T12:00:00.000Z",
-  "updatedAt": "2026-07-06T02:25:40.443Z"
+  "updatedAt": "2026-07-06T03:26:37.157Z"
 }

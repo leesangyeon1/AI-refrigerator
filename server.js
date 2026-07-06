@@ -1042,12 +1042,15 @@ server.on('error', (e) => {
 // Open in a standalone app window (Chromium-family --app mode) so it feels like a native
 // desktop app à la cc-switch; fall back to a normal browser tab if none is installed.
 function openAppWindow(url) {
+  // Launch the browser binary directly (not `open -na`), so an app window opens
+  // even when the browser is already running (singleton mode drops --app otherwise).
   const browsers = ['Google Chrome', 'Microsoft Edge', 'Brave Browser', 'Chromium', 'Vivaldi'];
   let i = 0;
   const tryNext = () => {
     if (i >= browsers.length) return execFile('open', [url], () => {});
     const b = browsers[i++];
-    execFile('open', ['-na', b, '--args', `--app=${url}`, '--new-window'], (err) => {
+    const bin = `/Applications/${b}.app/Contents/MacOS/${b}`;
+    execFile(bin, [`--app=${url}`, '--new-window'], (err) => {
       if (err) tryNext();
     });
   };

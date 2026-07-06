@@ -14,9 +14,15 @@ if [ -z "$NODE" ]; then
   osascript -e 'display alert "AI Refrigerator" message "Node.js 18+ was not found. Install Node and try again."' >/dev/null 2>&1
   exit 1
 fi
+# Launch the browser binary directly so an app window opens even when the browser
+# is already running (open -na drops --app in that case).
 open_win() {
   for b in "Google Chrome" "Microsoft Edge" "Brave Browser" "Chromium" "Vivaldi"; do
-    open -na "$b" --args --app="$URL" --new-window >/dev/null 2>&1 && return 0
+    bin="/Applications/$b.app/Contents/MacOS/$b"
+    if [ -x "$bin" ]; then
+      nohup "$bin" --app="$URL" --new-window >/dev/null 2>&1 &
+      return 0
+    fi
   done
   open "$URL"
 }
