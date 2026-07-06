@@ -3,174 +3,266 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>🧊 AI Refrigerator — preset manager for AI coding agents</title>
-<meta name="description" content="A CC Switch-style local tool that collects skills, plugins, MCP servers, agents and CLAUDE.md templates for AI coding agents into presets you can save, apply and export.">
+<title>🧊 AI Refrigerator</title>
 <link rel="icon" type="image/png" href="/icon.png">
-<style>
-:root{
-  --bg:#0d1117;--card:#161b22;--border:#30363d;--text:#e6edf3;--muted:#8b949e;
-  --accent:#58a6ff;--green:#3fb950;--orange:#d29922;--red:#f85149;--purple:#bc8cff;--pink:#f778ba;--cyan:#39d2c0;
-}
-*{margin:0;padding:0;box-sizing:border-box}
-body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;background:var(--bg);color:var(--text);line-height:1.55;overflow-x:hidden}
-a{color:var(--accent);text-decoration:none}a:hover{text-decoration:underline}
-code{font-family:'SF Mono','Fira Code',ui-monospace,Menlo,monospace;background:rgba(110,118,129,.2);padding:2px 6px;border-radius:5px;font-size:.9em}
-.wrap{max-width:1180px;margin:0 auto;padding:0 20px}
-.muted{color:var(--muted)}
-/* hero */
-.hero{text-align:center;padding:64px 20px 40px;background:radial-gradient(60% 120% at 50% 0%,rgba(88,166,255,.12),transparent)}
-.hero img{width:104px;height:104px;border-radius:24px;box-shadow:0 8px 40px rgba(88,166,255,.25)}
-.hero h1{font-size:2.6em;margin:18px 0 6px;letter-spacing:-.02em}
-.hero p.tag{font-size:1.15em;color:var(--muted);max-width:640px;margin:0 auto 22px}
-.cta{display:flex;gap:12px;justify-content:center;flex-wrap:wrap;margin-bottom:18px}
-.btn{display:inline-flex;align-items:center;gap:8px;padding:11px 20px;border-radius:8px;border:1px solid var(--border);background:var(--card);color:var(--text);font-size:.95em;cursor:pointer;transition:all .15s}
-.btn:hover{border-color:var(--accent);text-decoration:none}
-.btn-primary{background:rgba(88,166,255,.15);border-color:var(--accent);color:var(--accent)}
-.install{display:inline-block;background:#010409;border:1px solid var(--border);border-radius:8px;padding:12px 18px;font-family:'SF Mono',ui-monospace,Menlo,monospace;font-size:.9em;color:var(--green);max-width:100%;overflow-x:auto;white-space:nowrap}
-.local-note{margin-top:16px;font-size:.85em;color:var(--muted)}
-.local-note b{color:var(--orange)}
-/* stats */
-.stats{display:flex;gap:14px;justify-content:center;flex-wrap:wrap;margin:8px 0 40px}
-.stat{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:16px 26px;text-align:center;min-width:130px}
-.stat .n{font-size:1.9em;font-weight:700}
-.stat .l{color:var(--muted);font-size:.8em}
-/* section */
-section{padding:34px 0;border-top:1px solid var(--border)}
-h2.sh{font-size:1.5em;margin-bottom:4px}
-p.ss{color:var(--muted);margin-bottom:18px}
-/* toolbar */
-.toolbar{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:14px}
-.search{flex:1;min-width:220px;padding:10px 14px;border-radius:8px;border:1px solid var(--border);background:var(--card);color:var(--text);font-size:.95em}
-.search:focus{outline:none;border-color:var(--accent)}
-.chips{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:16px}
-.chip{padding:6px 13px;border-radius:16px;border:1px solid var(--border);background:var(--card);color:var(--text);cursor:pointer;font-size:.82em}
-.chip:hover{border-color:var(--accent)}
-.chip.active{border-color:var(--accent);background:rgba(88,166,255,.15);color:var(--accent)}
-.chip .n{color:var(--muted)}.chip.active .n{color:var(--accent)}
-/* grid */
-.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(290px,1fr));gap:12px}
-.card{background:var(--card);border:1px solid var(--border);border-radius:10px;padding:14px;display:flex;flex-direction:column;gap:8px;transition:border-color .15s}
-.card:hover{border-color:var(--accent)}
-.card-top{display:flex;align-items:center;justify-content:space-between;gap:8px}
-.card-name{font-weight:600;overflow-wrap:anywhere}
-.card-name a{color:var(--text)}.card-name a:hover{color:var(--accent)}
-.card-desc{color:var(--muted);font-size:.88em;overflow-wrap:anywhere}
-.card-meta{display:flex;gap:10px;flex-wrap:wrap;font-size:.8em;color:var(--muted);margin-top:auto}
-.stars{color:var(--orange)}
-.badge{font-size:.68em;padding:2px 8px;border-radius:10px;font-weight:600;white-space:nowrap;flex-shrink:0}
-.t-skill{background:rgba(210,153,34,.15);color:var(--orange)}.t-mcp{background:rgba(63,185,80,.15);color:var(--green)}
-.t-agent{background:rgba(188,140,255,.15);color:var(--purple)}.t-md{background:rgba(248,81,73,.15);color:var(--red)}
-.t-tool{background:rgba(57,210,192,.15);color:var(--cyan)}.t-plugin{background:rgba(88,166,255,.15);color:var(--accent)}
-.t-cli{background:rgba(247,120,186,.15);color:var(--pink)}
-.more{text-align:center;margin-top:18px}
-/* presets */
-.pgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:14px}
-.preset{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:16px}
-.preset h3{font-size:1.05em;display:flex;align-items:center;gap:8px}
-.preset .pd{color:var(--muted);font-size:.85em;margin:4px 0 10px}
-.preset .pill{display:inline-block;font-size:.72em;padding:2px 9px;border-radius:10px;border:1px solid var(--border);color:var(--muted);margin:0 4px 4px 0}
-/* footer */
-footer{border-top:1px solid var(--border);padding:30px 0 50px;text-align:center;color:var(--muted);font-size:.85em}
-@media(max-width:600px){.hero h1{font-size:2em}.hero .install{font-size:.78em}}
-</style>
+<link rel="stylesheet" href="/style.css">
 </head>
 <body>
-<div class="hero">
-  <img src="/icon.png" alt="AI Refrigerator icon" onerror="this.style.display='none'">
-  <h1>🧊 AI Refrigerator</h1>
-  <p class="tag">A CC Switch–style preset manager for AI coding agents. Collect skills, plugins, MCP servers, agents and CLAUDE.md templates into a "refrigerator," then combine them into purpose-built presets you save, apply and export.</p>
-  <div class="cta">
-    <a class="btn btn-primary" href="https://github.com/leesangyeon1/AI-refrigerator" target="_blank" rel="noopener">★ View on GitHub</a>
-  </div>
-  <div><code class="install">git clone https://github.com/leesangyeon1/AI-refrigerator.git &amp;&amp; cd AI-refrigerator &amp;&amp; node server.js</code></div>
-  <p class="local-note"><b>Local-first:</b> the interactive app (apply presets, detect running sessions, global plugin switching) runs on your own machine — this page is a read-only catalog preview.</p>
-</div>
 
-<div class="wrap">
-  <div class="stats" id="stats"></div>
+<div class="layout">
+  <aside class="sidebar">
+    <div class="logo"><span class="logo-emoji">🧊</span><span class="logo-text">AI Refrigerator</span></div>
+    <nav class="nav">
+      <a class="nav-link" href="#dashboard" data-view="dashboard">📊 Dashboard</a>
+      <a class="nav-link" href="#pantry" data-view="pantry">🧊 Refrigerator</a>
+      <a class="nav-link" href="#builder" data-view="builder">🍳 Preset Builder</a>
+      <a class="nav-link" href="#discover" data-view="discover">🔍 Discover &amp; AI Recommendations</a>
+      <a class="nav-link" href="#apply" data-view="apply">🚀 Apply &amp; Export</a>
+      <a class="nav-link" href="#settings" data-view="settings">⚙️ Settings</a>
+    </nav>
+    <div class="sidebar-footer">
+      <span class="status-dot" id="serverDot"></span>
+      <span id="serverText">Connecting…</span>
+      <span class="ver">v1.0.0</span>
+    </div>
+  </aside>
 
-  <section>
-    <h2 class="sh">🧊 The Refrigerator</h2>
-    <p class="ss">Built-in ingredients across 7 types — skills, plugins, MCP servers, agents, CLAUDE.md templates, tools and CLIs.</p>
-    <div class="toolbar"><input class="search" id="q" type="search" placeholder="Search by name, description, tag…"></div>
-    <div class="chips" id="chips"></div>
-    <div class="grid" id="grid"></div>
-    <div class="more" id="more"></div>
-  </section>
+  <main class="content">
 
-  <section>
-    <h2 class="sh">🍳 Sample Presets</h2>
-    <p class="ss">Ready-made recipes you get out of the box. Build your own in the local app.</p>
-    <div class="pgrid" id="presets"></div>
-  </section>
-</div>
-
-<footer>
-  <div class="wrap">
-    <p>🧊 AI Refrigerator · MIT · <a href="https://github.com/leesangyeon1/AI-refrigerator" target="_blank" rel="noopener">github.com/leesangyeon1/AI-refrigerator</a></p>
-    <p style="margin-top:6px">Interactive features run locally for safety — nothing here executes on the server.</p>
-  </div>
-</footer>
-
-<script>
-const TYPES = { skill:'Skill', plugin:'Plugin', mcp:'MCP', agent:'Agent', md:'CLAUDE.md', tool:'Tool', cli:'CLI' };
-const esc = s => String(s==null?'':s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-let CATALOG = [], PRESETS = [], filter = 'all', query = '', shown = 60;
-
-Promise.all([
-  fetch('./catalog.json').then(r=>r.json()),
-  fetch('./presets.json').then(r=>r.json()),
-]).then(([c,p])=>{ CATALOG=Array.isArray(c)?c:[]; PRESETS=Array.isArray(p)?p:[]; renderStats(); renderChips(); renderPresets(); render(); })
-  .catch(()=>{ document.getElementById('grid').innerHTML='<p class="muted">Failed to load catalog.</p>'; });
-
-function renderStats(){
-  const byType={}; CATALOG.forEach(i=>byType[i.type]=(byType[i.type]||0)+1);
-  const items=[['🧊',CATALOG.length,'Ingredients'],['🍳',PRESETS.length,'Presets'],['🔌',Object.keys(byType).length,'Types'],['⭐','10k+','Star projects']];
-  document.getElementById('stats').innerHTML=items.map(([e,n,l])=>`<div class="stat"><div class="n">${e} ${esc(n)}</div><div class="l">${esc(l)}</div></div>`).join('');
-}
-function renderChips(){
-  const byType={}; CATALOG.forEach(i=>byType[i.type]=(byType[i.type]||0)+1);
-  const order=['all','skill','plugin','mcp','agent','md','tool','cli'];
-  document.getElementById('chips').innerHTML=order.map(t=>{
-    const n=t==='all'?CATALOG.length:(byType[t]||0);
-    return `<button class="chip ${t===filter?'active':''}" data-t="${t}">${t==='all'?'All':esc(TYPES[t])} <span class="n">${n}</span></button>`;
-  }).join('');
-  document.querySelectorAll('.chip').forEach(b=>b.onclick=()=>{filter=b.dataset.t;shown=60;renderChips();render();});
-}
-function filtered(){
-  const q=query.trim().toLowerCase();
-  return CATALOG.filter(i=>{
-    if(filter!=='all'&&i.type!==filter)return false;
-    if(!q)return true;
-    return (i.name+' '+(i.desc||'')+' '+((i.tags||[]).join(' '))).toLowerCase().includes(q);
-  });
-}
-function render(){
-  const list=filtered();
-  const slice=list.slice(0,shown);
-  document.getElementById('grid').innerHTML=slice.map(i=>`
-    <div class="card">
-      <div class="card-top">
-        <span class="card-name">${i.url?`<a href="${esc(i.url)}" target="_blank" rel="noopener">${esc(i.name)}</a>`:esc(i.name)}</span>
-        <span class="badge t-${esc(i.type)}">${esc(TYPES[i.type]||i.type)}</span>
+    <!-- Dashboard -->
+    <section id="view-dashboard" class="view">
+      <div class="view-head"><h1>📊 Dashboard</h1><p>Refrigerator status at a glance · Preset quick switch</p></div>
+      <div class="stat-grid" id="dashStats"></div>
+      <div class="panel">
+        <div class="panel-head"><h2>🍳 Preset Quick Switch</h2><a class="btn btn-sm" href="#builder">Open Builder</a></div>
+        <div class="quick-row" id="quickSwitch"></div>
       </div>
-      <div class="card-desc">${esc(i.desc||'')}</div>
-      <div class="card-meta">${i.stars?`<span class="stars">★ ${esc(i.stars)}</span>`:''}${(i.tags||[]).slice(0,3).map(t=>`<span>#${esc(t)}</span>`).join('')}</div>
-    </div>`).join('') || '<p class="muted">No matches.</p>';
-  document.getElementById('more').innerHTML = list.length>shown ? `<button class="btn" id="mb">Show more (${list.length-shown} more)</button>` : '';
-  const mb=document.getElementById('mb'); if(mb) mb.onclick=()=>{shown+=60;render();};
-}
-function renderPresets(){
-  const byId={}; CATALOG.forEach(i=>byId[i.id]=i);
-  document.getElementById('presets').innerHTML=PRESETS.map(p=>{
-    const items=(p.items||[]).map(id=>byId[id]).filter(Boolean);
-    const byT={}; items.forEach(i=>byT[i.type]=(byT[i.type]||0)+1);
-    const pills=Object.entries(byT).map(([t,n])=>`<span class="pill">${esc(TYPES[t]||t)} ${n}</span>`).join('');
-    return `<div class="preset"><h3>${esc(p.emoji||'📦')} ${esc(p.name||p.id)}</h3>
-      <div class="pd">${esc(p.description||'')}</div>${pills||'<span class="muted">empty</span>'}</div>`;
-  }).join('');
-}
-document.getElementById('q').addEventListener('input', e=>{query=e.target.value;shown=60;render();});
-</script>
+      <div class="panel">
+        <div class="panel-head">
+          <h2>🖥️ Sessions <span class="muted small" id="sessionCount"></span></h2>
+          <button class="btn btn-sm" data-action="refresh-sessions">↻ Refresh</button>
+        </div>
+        <div id="sessionsList" class="list"></div>
+      </div>
+      <div class="two-col">
+        <div class="panel">
+          <div class="panel-head">
+            <h2>🔌 Installed Plugins <span class="muted small" id="pluginCount"></span></h2>
+            <button class="btn btn-sm" data-action="refresh-status">↻ Refresh</button>
+          </div>
+          <div class="muted small" id="claudeVersion"></div>
+          <div id="pluginList" class="list"></div>
+        </div>
+        <div class="panel">
+          <div class="panel-head"><h2>🕘 Last Apply History</h2></div>
+          <div id="historyList" class="list"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Refrigerator -->
+    <section id="view-pantry" class="view">
+      <div class="view-head"><h1>🧊 Refrigerator</h1><p>Manage your collected ingredients (Skills · Plugins · MCP · Agents · Templates)</p></div>
+      <div class="toolbar">
+        <input class="input search-input" id="pantrySearch" type="search" placeholder="Search name · description · tags…">
+        <button class="btn btn-primary" data-action="open-custom-modal">+ Custom Ingredient</button>
+      </div>
+      <div class="chips" id="pantryChips"></div>
+      <div id="pantryList"></div>
+    </section>
+
+    <!-- Preset Builder -->
+    <section id="view-builder" class="view">
+      <div class="view-head builder-head">
+        <div><h1>🍳 Preset Builder</h1><p>Drag ingredients to build recipes for each purpose · Changes save automatically</p></div>
+        <div class="head-actions">
+          <span class="save-indicator" id="saveIndicator"></span>
+          <button class="btn" data-action="import-preset">📥 Import JSON</button>
+          <button class="btn btn-primary" data-action="new-preset">+ New Preset</button>
+          <input type="file" id="importFile" accept=".json,application/json" hidden>
+        </div>
+      </div>
+      <div class="builder-wrap">
+        <aside class="builder-pantry">
+          <div class="builder-pantry-head">
+            <input class="input" id="builderSearch" type="search" placeholder="Search ingredients…">
+          </div>
+          <div id="builderPantryList"></div>
+        </aside>
+        <div class="builder-cols" id="builderCols"></div>
+      </div>
+    </section>
+
+    <!-- Discover & AI Recommendations -->
+    <section id="view-discover" class="view">
+      <div class="view-head"><h1>🔍 Discover &amp; AI Recommendations</h1><p>Find new ingredients and add them to your refrigerator and presets</p></div>
+      <div class="src-tabs" id="srcTabs">
+        <button class="src-tab active" data-action="src-tab" data-src="github">GitHub</button>
+        <button class="src-tab" data-action="src-tab" data-src="skillsmp">SkillsMP</button>
+        <button class="src-tab" data-action="src-tab" data-src="ai">🤖 AI Recommendations</button>
+      </div>
+      <div class="src-panel" id="panel-github">
+        <div class="toolbar">
+          <input class="input search-input grow" id="ghQuery" type="search" placeholder="Search GitHub repos (e.g. mcp server)…">
+          <button class="btn btn-primary" data-action="gh-search">Search</button>
+        </div>
+        <div class="mkt-bar">
+          <span class="mkt-label">Sort</span>
+          <div class="seg" id="ghSort">
+            <button data-sort="stars" class="active">★ Stars</button>
+            <button data-sort="forks">⑂ Forks</button>
+            <button data-sort="updated">↻ Updated</button>
+          </div>
+          <span class="mkt-label">Period</span>
+          <div class="seg" id="ghRange">
+            <button data-range="all" class="active">All time</button>
+            <button data-range="day">Day</button>
+            <button data-range="week">Week</button>
+            <button data-range="month">Month</button>
+          </div>
+        </div>
+        <div id="ghResults"></div>
+      </div>
+      <div class="src-panel hidden" id="panel-skillsmp">
+        <div class="toolbar">
+          <input class="input search-input" id="smpQuery" type="search" placeholder="Search SkillsMP skills…">
+          <button class="btn btn-primary" data-action="smp-search">Search</button>
+        </div>
+        <div id="smpResults"></div>
+      </div>
+      <div class="src-panel hidden" id="panel-ai">
+        <div class="panel">
+          <label class="field-label" for="aiGoal">Describe what you want to build</label>
+          <textarea class="input" id="aiGoal" rows="3" placeholder="e.g. I want to build a Next.js frontend app and save tokens"></textarea>
+          <div class="ai-cli-row" id="aiCliRow"></div>
+          <div class="row" style="justify-content:flex-end;margin-top:12px">
+            <label class="mkt-label" for="aiProvider">AI</label>
+            <select class="input" id="aiProvider" style="max-width:180px;width:auto"><option value="">Auto-detect</option></select>
+            <button class="btn btn-primary" id="aiBtn" data-action="ai-recommend">🤖 Get Recommendations</button>
+          </div>
+        </div>
+        <div id="aiResults"></div>
+      </div>
+    </section>
+
+    <!-- Apply & Export -->
+    <section id="view-apply" class="view">
+      <div class="view-head"><h1>🚀 Apply &amp; Export</h1><p>Apply presets to Session · Project · Global, or export them to a file</p></div>
+      <div class="panel">
+        <label class="field-label" for="applyPreset">Select Preset</label>
+        <select class="input" id="applyPreset"></select>
+        <div id="applySummary"></div>
+      </div>
+      <div class="mode-cards" id="modeCards"></div>
+      <div id="modePanel"></div>
+      <div class="panel">
+        <div class="panel-head"><h2>📤 Export</h2></div>
+        <div class="format-tabs" id="formatTabs"></div>
+        <div class="code-wrap"><pre id="exportCode" class="code-view"></pre></div>
+        <div class="row-end">
+          <button class="btn" data-action="export-copy">📋 Copy</button>
+          <button class="btn btn-primary" data-action="export-download">⬇ Download</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- Settings -->
+    <section id="view-settings" class="view">
+      <div class="view-head"><h1>⚙️ Settings</h1><p>Token · AI command · default paths</p></div>
+      <div class="panel settings-panel">
+        <label class="field-label" for="cfgToken">GitHub Token <span class="muted" id="tokenState"></span></label>
+        <input class="input" id="cfgToken" type="password" autocomplete="off" placeholder="ghp_… (eases search rate limits, optional)">
+        <label class="field-label" for="cfgAiCmd">AI Command</label>
+        <input class="input" id="cfgAiCmd" type="text" placeholder="claude">
+        <label class="field-label" for="cfgAiArgs">AI Command Arguments (space-separated)</label>
+        <input class="input" id="cfgAiArgs" type="text" placeholder="-p">
+        <label class="field-label" for="cfgProjPath">Default Project Path</label>
+        <input class="input" id="cfgProjPath" type="text" placeholder="/Users/me/my-project">
+        <div class="row-end"><button class="btn btn-primary" data-action="save-config">Save</button></div>
+      </div>
+      <div class="panel">
+        <div class="panel-head"><h2>📁 Data Location</h2></div>
+        <ul class="data-loc">
+          <li><code>presets/</code> — Preset recipe JSON (shareable)</li>
+          <li><code>data/</code> — Catalog · custom ingredients · settings · apply history</li>
+          <li><code>~/.ai-refrigerator/session-presets/</code> — settings files for session apply</li>
+        </ul>
+      </div>
+    </section>
+
+  </main>
+</div>
+
+<!-- Custom Ingredient Modal -->
+<div class="modal-overlay" id="customModal">
+  <div class="modal">
+    <h3>Add Custom Ingredient</h3>
+    <label class="field-label" for="cmName">Name *</label>
+    <input class="input" id="cmName" placeholder="my-skill">
+    <label class="field-label" for="cmType">Type</label>
+    <select class="input" id="cmType">
+      <option value="skill">Skill</option>
+      <option value="plugin">Plugin</option>
+      <option value="mcp">MCP Server</option>
+      <option value="agent">Agent Repo</option>
+      <option value="md">CLAUDE.md Template</option>
+      <option value="tool">Tool</option>
+      <option value="cli">CLI</option>
+    </select>
+    <label class="field-label" for="cmUrl">URL</label>
+    <input class="input" id="cmUrl" placeholder="https://github.com/user/repo">
+    <label class="field-label" for="cmDesc">Description</label>
+    <input class="input" id="cmDesc" placeholder="One-line description">
+    <label class="field-label" for="cmInstall">Install Command</label>
+    <input class="input" id="cmInstall" placeholder="npx skills add user/repo">
+    <label class="field-label" for="cmTags">Tags (comma-separated)</label>
+    <input class="input" id="cmTags" placeholder="frontend, token">
+    <div class="modal-actions">
+      <button class="btn" data-action="modal-close" data-modal="customModal">Cancel</button>
+      <button class="btn btn-primary" data-action="custom-submit">Add</button>
+    </div>
+  </div>
+</div>
+
+<!-- New Preset Modal -->
+<div class="modal-overlay" id="presetModal">
+  <div class="modal">
+    <h3>New Preset</h3>
+    <label class="field-label" for="npName">Name *</label>
+    <input class="input" id="npName" placeholder="e.g. react-frontend (English recommended)">
+    <label class="field-label" for="npEmoji">Emoji</label>
+    <input class="input" id="npEmoji" maxlength="4" value="📦">
+    <label class="field-label" for="npDesc">Description (optional)</label>
+    <input class="input" id="npDesc" placeholder="One-line purpose">
+    <div class="modal-actions">
+      <button class="btn" data-action="modal-close" data-modal="presetModal">Cancel</button>
+      <button class="btn btn-primary" data-action="preset-submit">Create</button>
+    </div>
+  </div>
+</div>
+
+<!-- Confirm Modal -->
+<div class="modal-overlay" id="confirmModal">
+  <div class="modal">
+    <h3 id="confirmTitle"></h3>
+    <div class="modal-body" id="confirmBody"></div>
+    <div class="modal-actions">
+      <button class="btn" id="confirmCancel">Cancel</button>
+      <button class="btn btn-primary" id="confirmOk">Confirm</button>
+    </div>
+  </div>
+</div>
+
+<!-- Mobile Bottom Sheet -->
+<div class="sheet-overlay" id="sheetOverlay" data-action="sheet-cancel"></div>
+<div class="bottom-sheet" id="bottomSheet">
+  <h4 id="sheetTitle">Where would you like to add it?</h4>
+  <div class="sheet-grid" id="sheetGrid"></div>
+  <button class="sheet-cancel" data-action="sheet-cancel">Cancel</button>
+</div>
+
+<div class="toast-wrap" id="toastWrap"></div>
+
+<script src="/app.js"></script>
 </body>
 </html>
