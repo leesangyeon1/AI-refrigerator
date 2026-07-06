@@ -770,41 +770,14 @@ async function colMenu(anchor, presetId) {
     title: 'Preset menu',
     anchor,
     options: [
-      { label: '🎯 Apply to session', value: 'session' },
-      { label: '🚀 Open in Apply & Export', value: 'apply' },
       { label: '📤 Export JSON', value: 'export' },
       { label: '📋 Duplicate', value: 'dup' },
       { label: '🗑 Delete', value: 'del' },
     ],
   });
-  if (v === 'session') applyPresetToSession(presetId);
-  else if (v === 'apply') openInApply(presetId);
-  else if (v === 'export') exportPresetJson(presetId);
+  if (v === 'export') exportPresetJson(presetId);
   else if (v === 'dup') duplicatePreset(presetId);
   else if (v === 'del') deletePresetFlow(presetId);
-}
-
-// Apply a preset to a session straight from the builder: generate the session
-// config (plugins via --settings, MCP via --mcp-config) and copy the launch command.
-async function applyPresetToSession(presetId) {
-  const p = S.presets.find(x => x.id === presetId);
-  if (!p) return;
-  if (!(p.items || []).length) { toast('This preset is empty — add ingredients first', 'error'); return; }
-  try {
-    const d = await api('/api/apply', { method: 'POST', body: { presetId, mode: 'session' } });
-    const ni = (d.needInstall || []).length;
-    await copyText(d.command || '', `🎯 Session command copied — ${d.pluginCount ?? 0} plugin(s), ${d.mcpCount ?? 0} MCP${ni ? ` · ${ni} need install` : ''}`);
-    await reloadState();
-    if (S.ui.view === 'dashboard') renderDashboard();
-  } catch { /* api() handles the toast */ }
-}
-
-// Jump to Apply & Export with this preset pre-selected in Session mode.
-function openInApply(presetId) {
-  S.ui.apply.presetId = presetId;
-  S.ui.apply.mode = 'session';
-  S.ui.apply.session = null;
-  location.hash = '#apply';
 }
 
 function exportPresetJson(id) {

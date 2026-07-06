@@ -4,3 +4,4 @@ data/config.json
 data/state.json
 data/custom-items.json
 *.bak-*
+site/.vercel/

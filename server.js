@@ -792,12 +792,29 @@ async function handleApply(req, res) {
     await fsp.mkdir(SESSION_DIR, { recursive: true });
     const settingsPath = path.join(SESSION_DIR, `${preset.id}.settings.json`);
     await writeJsonFile(settingsPath, { enabledPlugins: Object.fromEntries(cls.pluginItems.map((i) => [i.plugin, true])) });
+    // Session scope enables plugins AND MCP servers: plugins via --settings,
+    // MCP servers via --mcp-config (both are per-session, nothing permanent).
+    let command = `claude --settings ${settingsPath}`;
+    let mcpPath = null;
+    if (cls.mcpItems.length) {
+      mcpPath = path.join(SESSION_DIR, `${preset.id}.mcp.json`);
+      await writeJsonFile(mcpPath, { mcpServers: Object.fromEntries(cls.mcpItems.map((i) => [i.id, i.mcpConfig])) });
+      command += ` --mcp-config ${mcpPath}`;
+    }
     await recordApply(preset.id, 'session', settingsPath);
+    // Skills / tools / agents / md can't be "enabled" per-session — they must be
+    // installed. Surface them so the UI can point the user to the install script.
+    const needInstall = cls.resolved.filter(
+      (it) => !(it.type === 'plugin' && it.plugin) && !(it.mcpConfig && typeof it.mcpConfig === 'object' && it.mcpConfig.command),
+    );
     return ok(res, {
       settingsPath,
-      command: `claude --settings ${settingsPath}`,
-      aliasLine: `alias cc-${preset.id}='claude --settings ${settingsPath}'`,
+      mcpPath,
+      command,
+      aliasLine: `alias cc-${preset.id}='${command}'`,
       pluginCount: cls.pluginItems.length,
+      mcpCount: cls.mcpItems.length,
+      needInstall: needInstall.map((i) => ({ id: i.id, name: i.name, type: i.type, install: i.install || null })),
     });
   }
 
@@ -903,6 +920,193 @@ async function handleStateGet(res) {
   ok(res, raw && typeof raw === 'object' ? raw : { ...DEFAULT_STATE });
 }
 
+function emptyBreakdown() {
+  return { plugin: [], mcp: [], skill: [], agent: [], md: [], tool: [], cli: [] };
+}
+function buildBreakdown(preset, byId) {
+  const b = emptyBreakdown();
+  for (const iid of (preset && preset.items) || []) {
+    const it = byId.get(iid);
+    if (it && b[it.type]) b[it.type].push(it.name || iid);
+  }
+  return b;
+}
+function parseClaudeArgs(args) {
+  const settings = args.match(/--settings\s+(\S+)/);
+  const mcp = args.match(/--mcp-config\s+(\S+)/);
+  const resume = args.match(/--resume\s+(\S+)/) || args.match(/(?:^|\s)-r\s+(\S+)/);
+  const cont = /(?:^|\s)(--continue|-c)(?:\s|$)/.test(args);
+  return { settingsPath: settings ? settings[1] : null, mcpPath: mcp ? mcp[1] : null, resume: resume ? resume[1] : null, continue: cont };
+}
+
+// Compute the config actually active for a running Claude Code session by reading
+// its real config sources: global ~/.claude, the project's .claude/.mcp.json/CLAUDE.md,
+// and any --settings/--mcp-config files it was launched with.
+async function listDirNames(dir) {
+  try {
+    // Include symlinked entries too — plugin-provided skills/agents are symlinks.
+    return (await fsp.readdir(dir, { withFileTypes: true }))
+      .filter((e) => (e.isDirectory() || e.isSymbolicLink()) && !e.name.startsWith('.'))
+      .map((e) => e.name);
+  } catch {
+    return [];
+  }
+}
+async function inspectClaude(cwd, settingsFlag, mcpFlag) {
+  const home = os.homedir();
+  const b = emptyBreakdown();
+  // Plugins: merge enabledPlugins from global + project (+ local) + --settings flag
+  const pluginMap = {};
+  const settingsSources = [path.join(home, '.claude', 'settings.json'), path.join(home, '.claude', 'settings.local.json')];
+  if (cwd && cwd !== home) {
+    settingsSources.push(path.join(cwd, '.claude', 'settings.json'), path.join(cwd, '.claude', 'settings.local.json'));
+  }
+  if (settingsFlag) settingsSources.push(settingsFlag);
+  for (const s of settingsSources) {
+    const j = await readJsonOrNull(s);
+    if (j && j.enabledPlugins && typeof j.enabledPlugins === 'object') Object.assign(pluginMap, j.enabledPlugins);
+  }
+  b.plugin = Object.entries(pluginMap).filter(([, v]) => v).map(([k]) => k);
+  // Skills & agents: global + project directories
+  const skillDirs = [path.join(home, '.claude', 'skills')];
+  const agentDirs = [path.join(home, '.claude', 'agents')];
+  if (cwd && cwd !== home) {
+    skillDirs.push(path.join(cwd, '.claude', 'skills'));
+    agentDirs.push(path.join(cwd, '.claude', 'agents'));
+  }
+  const skillSet = new Set();
+  for (const d of skillDirs) (await listDirNames(d)).forEach((n) => skillSet.add(n));
+  const agentSet = new Set();
+  for (const d of agentDirs) (await listDirNames(d)).forEach((n) => agentSet.add(n));
+  b.skill = [...skillSet];
+  b.agent = [...agentSet];
+  // MCP servers: global ~/.claude.json + project .mcp.json + --mcp-config flag
+  const mcpSet = new Set();
+  const globalMcp = await readJsonOrNull(path.join(home, '.claude.json'));
+  if (globalMcp && globalMcp.mcpServers) Object.keys(globalMcp.mcpServers).forEach((k) => mcpSet.add(k));
+  if (cwd) {
+    const projMcp = await readJsonOrNull(path.join(cwd, '.mcp.json'));
+    if (projMcp && projMcp.mcpServers) Object.keys(projMcp.mcpServers).forEach((k) => mcpSet.add(k));
+  }
+  if (mcpFlag) {
+    const flagMcp = await readJsonOrNull(mcpFlag);
+    if (flagMcp && flagMcp.mcpServers) Object.keys(flagMcp.mcpServers).forEach((k) => mcpSet.add(k));
+  }
+  b.mcp = [...mcpSet];
+  // CLAUDE.md in the project and/or global
+  if (cwd && (await exists(path.join(cwd, 'CLAUDE.md')))) b.md.push('CLAUDE.md');
+  if (await exists(path.join(home, '.claude', 'CLAUDE.md'))) b.md.push('~/.claude/CLAUDE.md');
+  return b;
+}
+
+async function handleSessions(res) {
+  const items = await loadMergedCatalog();
+  const byId = new Map(items.map((i) => [i.id, i]));
+
+  // 1) Enumerate ALL running `claude` CLI processes (not the desktop app / plugin procs / this server)
+  const ps = await run('ps', ['-Ao', 'pid=,args='], { timeout: 6000 });
+  const procs = [];
+  if (ps.ok) {
+    for (const raw of (ps.stdout || '').split('\n')) {
+      const line = raw.trim();
+      const m = line.match(/^(\d+)\s+(.*)$/);
+      if (!m) continue;
+      const pid = m[1];
+      const args = m[2];
+      const isCli =
+        /(^|\/)claude(\s|$)/.test(args) &&
+        !args.includes('/Applications/Claude.app') &&
+        !args.includes('Claude Helper') &&
+        !/\bbun run\b/.test(args) &&
+        !args.includes('AI-refrigerator/server.js') &&
+        !/claude (plugin|mcp)\b/.test(args) &&
+        !args.includes('--version');
+      if (isCli) procs.push({ pid, args });
+    }
+  }
+
+  // 2) Working directory per process (best effort, batched)
+  const cwds = {};
+  if (procs.length) {
+    const ls = await run('lsof', ['-a', '-d', 'cwd', '-Fn', '-p', procs.map((p) => p.pid).join(',')], { timeout: 6000 });
+    if (ls.ok) {
+      let cur = null;
+      for (const l of (ls.stdout || '').split('\n')) {
+        if (l.startsWith('p')) cur = l.slice(1);
+        else if (l.startsWith('n') && cur) cwds[cur] = l.slice(1);
+      }
+    }
+  }
+
+  // 3) Shape each running session with its EFFECTIVE (actually active) config,
+  //    read from that session's real config sources — even if not from a preset.
+  const running = [];
+  for (const p of procs) {
+    const a = parseClaudeArgs(p.args);
+    const cwd = cwds[p.pid] || null;
+    let mode = 'fresh';
+    let label = 'New session';
+    let presetName = null;
+    if (a.settingsPath && a.settingsPath.includes(path.join('.ai-refrigerator', 'session-presets'))) {
+      mode = 'preset';
+      const base = path.basename(a.settingsPath);
+      const id = base.endsWith('.settings.json') ? base.slice(0, -'.settings.json'.length) : null;
+      const preset = id ? await loadPreset(id) : null;
+      presetName = preset ? preset.name || id : id;
+      label = presetName || 'Preset session';
+    } else if (a.resume) {
+      mode = 'resume';
+      label = `Resumed · ${a.resume.slice(0, 8)}`;
+    } else if (a.continue) {
+      mode = 'continue';
+      label = 'Continued session';
+    }
+    const breakdown = await inspectClaude(cwd, a.settingsPath, a.mcpPath);
+    running.push({
+      pid: p.pid,
+      cwd,
+      mode,
+      label,
+      presetName,
+      settingsPath: a.settingsPath,
+      mcpPath: a.mcpPath,
+      resume: a.resume || null,
+      plugins: breakdown.plugin,
+      mcpServers: breakdown.mcp,
+      breakdown,
+    });
+  }
+
+  // 4) Refrigerator-generated session configs (available to launch), flagged if running
+  const configs = [];
+  try {
+    for (const f of (await fsp.readdir(SESSION_DIR)).filter((x) => x.endsWith('.settings.json'))) {
+      const id = f.slice(0, -'.settings.json'.length);
+      const settingsPath = path.join(SESSION_DIR, f);
+      const settings = (await readJsonOrNull(settingsPath)) || {};
+      const plugins = Object.entries(settings.enabledPlugins || {}).filter(([, v]) => v).map(([k]) => k);
+      const mcpPath = path.join(SESSION_DIR, `${id}.mcp.json`);
+      const mcpRaw = await readJsonOrNull(mcpPath);
+      const mcpServers = mcpRaw && mcpRaw.mcpServers ? Object.keys(mcpRaw.mcpServers) : [];
+      const preset = await loadPreset(id);
+      let command = `claude --settings ${settingsPath}`;
+      if (mcpServers.length) command += ` --mcp-config ${mcpPath}`;
+      configs.push({
+        id,
+        presetName: preset ? preset.name || id : id,
+        presetExists: Boolean(preset),
+        command,
+        plugins,
+        mcpServers,
+        breakdown: preset ? buildBreakdown(preset, byId) : emptyBreakdown(),
+        running: running.some((r) => r.settingsPath === settingsPath),
+      });
+    }
+  } catch {}
+
+  ok(res, { running, configs });
+}
+
 // ── Static files ──────────────────────────────────────────
 async function serveStatic(res, pathname) {
   let p;
@@ -1004,6 +1208,7 @@ async function handle(req, res) {
   if (method === 'GET' && pathname === '/api/config') return handleConfigGet(res);
   if (method === 'POST' && pathname === '/api/config') return handleConfigPost(req, res);
   if (method === 'GET' && pathname === '/api/state') return handleStateGet(res);
+  if (method === 'GET' && pathname === '/api/sessions') return handleSessions(res);
 
   fail(res, 404, 'The requested API path was not found');
 }
