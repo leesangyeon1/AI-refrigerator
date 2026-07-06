@@ -1,0 +1,15 @@
+{
+  "name": "ai-refrigerator",
+  "version": "1.1.0",
+  "description": "A zero-dependency local web app to manage skill/plugin/MCP/CLAUDE.md combos for AI coding agents as presets (CC Switch style)",
+  "type": "module",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "app": "node server.js --app"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "license": "MIT"
+}

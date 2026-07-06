@@ -1,0 +1,32 @@
+#!/bin/bash
+# AI Refrigerator launcher — starts the local server and opens a standalone app window.
+DIR="$(cd "$(dirname "$0")/../../.." && pwd)"
+cd "$DIR" || exit 1
+PORT="${PORT:-4924}"
+URL="http://127.0.0.1:$PORT"
+NODE="$(command -v node || true)"
+if [ -z "$NODE" ]; then
+  for p in /opt/homebrew/bin/node /usr/local/bin/node "$HOME/.nvm/versions/node"/*/bin/node; do
+    [ -x "$p" ] && NODE="$p" && break
+  done
+fi
+if [ -z "$NODE" ]; then
+  osascript -e 'display alert "AI Refrigerator" message "Node.js 18+ was not found. Install Node and try again."' >/dev/null 2>&1
+  exit 1
+fi
+open_win() {
+  for b in "Google Chrome" "Microsoft Edge" "Brave Browser" "Chromium" "Vivaldi"; do
+    open -na "$b" --args --app="$URL" --new-window >/dev/null 2>&1 && return 0
+  done
+  open "$URL"
+}
+if curl -s -o /dev/null "$URL/api/catalog" >/dev/null 2>&1; then
+  open_win
+else
+  nohup "$NODE" server.js --no-open >/tmp/ai-refrigerator.log 2>&1 &
+  for i in 1 2 3 4 5 6 7 8 9 10; do
+    curl -s -o /dev/null "$URL/api/catalog" >/dev/null 2>&1 && break
+    sleep 0.4
+  done
+  open_win
+fi

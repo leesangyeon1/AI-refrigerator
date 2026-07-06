@@ -1,0 +1,16 @@
+{
+  "id": "frontend",
+  "name": "Frontend React",
+  "emoji": "🎨",
+  "description": "A stack for frontend development. Anti-slop UI, up-to-date docs, design guides, and deployment.",
+  "items": [
+    "taste",
+    "context7",
+    "plugin-frontend-design",
+    "plugin-vercel",
+    "grillme",
+    "browseruse"
+  ],
+  "createdAt": "2026-07-05T12:00:00.000Z",
+  "updatedAt": "2026-07-06T02:24:55.735Z"
+}

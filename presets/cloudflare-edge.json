@@ -1,0 +1,9 @@
+{
+  "id": "cloudflare-edge",
+  "name": "Cloudflare Edge",
+  "emoji": "☁️",
+  "description": "A stack for Cloudflare Workers, R2, D1, and KV development. Official plugin plus docs injection.",
+  "items": ["plugin-cloudflare", "context7", "repomix", "md-bestpractice"],
+  "createdAt": "2026-07-05T12:00:00.000Z",
+  "updatedAt": "2026-07-05T12:00:00.000Z"
+}

@@ -1,0 +1,261 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>🧊 AI Refrigerator</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🧊</text></svg>">
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+
+<div class="layout">
+  <aside class="sidebar">
+    <div class="logo"><span class="logo-emoji">🧊</span><span class="logo-text">AI Refrigerator</span></div>
+    <nav class="nav">
+      <a class="nav-link" href="#dashboard" data-view="dashboard">📊 Dashboard</a>
+      <a class="nav-link" href="#pantry" data-view="pantry">🧊 Refrigerator</a>
+      <a class="nav-link" href="#builder" data-view="builder">🍳 Preset Builder</a>
+      <a class="nav-link" href="#discover" data-view="discover">🔍 Discover &amp; AI Recommendations</a>
+      <a class="nav-link" href="#apply" data-view="apply">🚀 Apply &amp; Export</a>
+      <a class="nav-link" href="#settings" data-view="settings">⚙️ Settings</a>
+    </nav>
+    <div class="sidebar-footer">
+      <span class="status-dot" id="serverDot"></span>
+      <span id="serverText">Connecting…</span>
+      <span class="ver">v1.0.0</span>
+    </div>
+  </aside>
+
+  <main class="content">
+
+    <!-- Dashboard -->
+    <section id="view-dashboard" class="view">
+      <div class="view-head"><h1>📊 Dashboard</h1><p>Refrigerator status at a glance · Preset quick switch</p></div>
+      <div class="stat-grid" id="dashStats"></div>
+      <div class="panel">
+        <div class="panel-head"><h2>🍳 Preset Quick Switch</h2><a class="btn btn-sm" href="#builder">Open Builder</a></div>
+        <div class="quick-row" id="quickSwitch"></div>
+      </div>
+      <div class="two-col">
+        <div class="panel">
+          <div class="panel-head">
+            <h2>🔌 Installed Plugins <span class="muted small" id="pluginCount"></span></h2>
+            <button class="btn btn-sm" data-action="refresh-status">↻ Refresh</button>
+          </div>
+          <div class="muted small" id="claudeVersion"></div>
+          <div id="pluginList" class="list"></div>
+        </div>
+        <div class="panel">
+          <div class="panel-head"><h2>🕘 Last Apply History</h2></div>
+          <div id="historyList" class="list"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Refrigerator -->
+    <section id="view-pantry" class="view">
+      <div class="view-head"><h1>🧊 Refrigerator</h1><p>Manage your collected ingredients (Skills · Plugins · MCP · Agents · Templates)</p></div>
+      <div class="toolbar">
+        <input class="input search-input" id="pantrySearch" type="search" placeholder="Search name · description · tags…">
+        <button class="btn btn-primary" data-action="open-custom-modal">+ Custom Ingredient</button>
+      </div>
+      <div class="chips" id="pantryChips"></div>
+      <div id="pantryList"></div>
+    </section>
+
+    <!-- Preset Builder -->
+    <section id="view-builder" class="view">
+      <div class="view-head builder-head">
+        <div><h1>🍳 Preset Builder</h1><p>Drag ingredients to build recipes for each purpose · Changes save automatically</p></div>
+        <div class="head-actions">
+          <span class="save-indicator" id="saveIndicator"></span>
+          <button class="btn" data-action="import-preset">📥 Import JSON</button>
+          <button class="btn btn-primary" data-action="new-preset">+ New Preset</button>
+          <input type="file" id="importFile" accept=".json,application/json" hidden>
+        </div>
+      </div>
+      <div class="builder-wrap">
+        <aside class="builder-pantry">
+          <div class="builder-pantry-head">
+            <input class="input" id="builderSearch" type="search" placeholder="Search ingredients…">
+          </div>
+          <div id="builderPantryList"></div>
+        </aside>
+        <div class="builder-cols" id="builderCols"></div>
+      </div>
+    </section>
+
+    <!-- Discover & AI Recommendations -->
+    <section id="view-discover" class="view">
+      <div class="view-head"><h1>🔍 Discover &amp; AI Recommendations</h1><p>Find new ingredients and add them to your refrigerator and presets</p></div>
+      <div class="src-tabs" id="srcTabs">
+        <button class="src-tab active" data-action="src-tab" data-src="github">GitHub</button>
+        <button class="src-tab" data-action="src-tab" data-src="skillsmp">SkillsMP</button>
+        <button class="src-tab" data-action="src-tab" data-src="ai">🤖 AI Recommendations</button>
+      </div>
+      <div class="src-panel" id="panel-github">
+        <div class="toolbar">
+          <input class="input search-input grow" id="ghQuery" type="search" placeholder="Search GitHub repos (e.g. mcp server)…">
+          <button class="btn btn-primary" data-action="gh-search">Search</button>
+        </div>
+        <div class="mkt-bar">
+          <span class="mkt-label">Sort</span>
+          <div class="seg" id="ghSort">
+            <button data-sort="stars" class="active">★ Stars</button>
+            <button data-sort="forks">⑂ Forks</button>
+            <button data-sort="updated">↻ Updated</button>
+          </div>
+          <span class="mkt-label">Period</span>
+          <div class="seg" id="ghRange">
+            <button data-range="all" class="active">All time</button>
+            <button data-range="day">Day</button>
+            <button data-range="week">Week</button>
+            <button data-range="month">Month</button>
+          </div>
+        </div>
+        <div id="ghResults"></div>
+      </div>
+      <div class="src-panel hidden" id="panel-skillsmp">
+        <div class="toolbar">
+          <input class="input search-input" id="smpQuery" type="search" placeholder="Search SkillsMP skills…">
+          <button class="btn btn-primary" data-action="smp-search">Search</button>
+        </div>
+        <div id="smpResults"></div>
+      </div>
+      <div class="src-panel hidden" id="panel-ai">
+        <div class="panel">
+          <label class="field-label" for="aiGoal">Describe what you want to build</label>
+          <textarea class="input" id="aiGoal" rows="3" placeholder="e.g. I want to build a Next.js frontend app and save tokens"></textarea>
+          <div class="ai-cli-row" id="aiCliRow"></div>
+          <div class="row" style="justify-content:flex-end;margin-top:12px">
+            <label class="mkt-label" for="aiProvider">AI</label>
+            <select class="input" id="aiProvider" style="max-width:180px;width:auto"><option value="">Auto-detect</option></select>
+            <button class="btn btn-primary" id="aiBtn" data-action="ai-recommend">🤖 Get Recommendations</button>
+          </div>
+        </div>
+        <div id="aiResults"></div>
+      </div>
+    </section>
+
+    <!-- Apply & Export -->
+    <section id="view-apply" class="view">
+      <div class="view-head"><h1>🚀 Apply &amp; Export</h1><p>Apply presets to Session · Project · Global, or export them to a file</p></div>
+      <div class="panel">
+        <label class="field-label" for="applyPreset">Select Preset</label>
+        <select class="input" id="applyPreset"></select>
+        <div id="applySummary"></div>
+      </div>
+      <div class="mode-cards" id="modeCards"></div>
+      <div id="modePanel"></div>
+      <div class="panel">
+        <div class="panel-head"><h2>📤 Export</h2></div>
+        <div class="format-tabs" id="formatTabs"></div>
+        <div class="code-wrap"><pre id="exportCode" class="code-view"></pre></div>
+        <div class="row-end">
+          <button class="btn" data-action="export-copy">📋 Copy</button>
+          <button class="btn btn-primary" data-action="export-download">⬇ Download</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- Settings -->
+    <section id="view-settings" class="view">
+      <div class="view-head"><h1>⚙️ Settings</h1><p>Token · AI command · default paths</p></div>
+      <div class="panel settings-panel">
+        <label class="field-label" for="cfgToken">GitHub Token <span class="muted" id="tokenState"></span></label>
+        <input class="input" id="cfgToken" type="password" autocomplete="off" placeholder="ghp_… (eases search rate limits, optional)">
+        <label class="field-label" for="cfgAiCmd">AI Command</label>
+        <input class="input" id="cfgAiCmd" type="text" placeholder="claude">
+        <label class="field-label" for="cfgAiArgs">AI Command Arguments (space-separated)</label>
+        <input class="input" id="cfgAiArgs" type="text" placeholder="-p">
+        <label class="field-label" for="cfgProjPath">Default Project Path</label>
+        <input class="input" id="cfgProjPath" type="text" placeholder="/Users/me/my-project">
+        <div class="row-end"><button class="btn btn-primary" data-action="save-config">Save</button></div>
+      </div>
+      <div class="panel">
+        <div class="panel-head"><h2>📁 Data Location</h2></div>
+        <ul class="data-loc">
+          <li><code>presets/</code> — Preset recipe JSON (shareable)</li>
+          <li><code>data/</code> — Catalog · custom ingredients · settings · apply history</li>
+          <li><code>~/.ai-refrigerator/session-presets/</code> — settings files for session apply</li>
+        </ul>
+      </div>
+    </section>
+
+  </main>
+</div>
+
+<!-- Custom Ingredient Modal -->
+<div class="modal-overlay" id="customModal">
+  <div class="modal">
+    <h3>Add Custom Ingredient</h3>
+    <label class="field-label" for="cmName">Name *</label>
+    <input class="input" id="cmName" placeholder="my-skill">
+    <label class="field-label" for="cmType">Type</label>
+    <select class="input" id="cmType">
+      <option value="skill">Skill</option>
+      <option value="plugin">Plugin</option>
+      <option value="mcp">MCP Server</option>
+      <option value="agent">Agent Repo</option>
+      <option value="md">CLAUDE.md Template</option>
+      <option value="tool">Tool</option>
+      <option value="cli">CLI</option>
+    </select>
+    <label class="field-label" for="cmUrl">URL</label>
+    <input class="input" id="cmUrl" placeholder="https://github.com/user/repo">
+    <label class="field-label" for="cmDesc">Description</label>
+    <input class="input" id="cmDesc" placeholder="One-line description">
+    <label class="field-label" for="cmInstall">Install Command</label>
+    <input class="input" id="cmInstall" placeholder="npx skills add user/repo">
+    <label class="field-label" for="cmTags">Tags (comma-separated)</label>
+    <input class="input" id="cmTags" placeholder="frontend, token">
+    <div class="modal-actions">
+      <button class="btn" data-action="modal-close" data-modal="customModal">Cancel</button>
+      <button class="btn btn-primary" data-action="custom-submit">Add</button>
+    </div>
+  </div>
+</div>
+
+<!-- New Preset Modal -->
+<div class="modal-overlay" id="presetModal">
+  <div class="modal">
+    <h3>New Preset</h3>
+    <label class="field-label" for="npName">Name *</label>
+    <input class="input" id="npName" placeholder="e.g. react-frontend (English recommended)">
+    <label class="field-label" for="npEmoji">Emoji</label>
+    <input class="input" id="npEmoji" maxlength="4" value="📦">
+    <label class="field-label" for="npDesc">Description (optional)</label>
+    <input class="input" id="npDesc" placeholder="One-line purpose">
+    <div class="modal-actions">
+      <button class="btn" data-action="modal-close" data-modal="presetModal">Cancel</button>
+      <button class="btn btn-primary" data-action="preset-submit">Create</button>
+    </div>
+  </div>
+</div>
+
+<!-- Confirm Modal -->
+<div class="modal-overlay" id="confirmModal">
+  <div class="modal">
+    <h3 id="confirmTitle"></h3>
+    <div class="modal-body" id="confirmBody"></div>
+    <div class="modal-actions">
+      <button class="btn" id="confirmCancel">Cancel</button>
+      <button class="btn btn-primary" id="confirmOk">Confirm</button>
+    </div>
+  </div>
+</div>
+
+<!-- Mobile Bottom Sheet -->
+<div class="sheet-overlay" id="sheetOverlay" data-action="sheet-cancel"></div>
+<div class="bottom-sheet" id="bottomSheet">
+  <h4 id="sheetTitle">Where would you like to add it?</h4>
+  <div class="sheet-grid" id="sheetGrid"></div>
+  <button class="sheet-cancel" data-action="sheet-cancel">Cancel</button>
+</div>
+
+<div class="toast-wrap" id="toastWrap"></div>
+
+<script src="/app.js"></script>
+</body>
+</html>

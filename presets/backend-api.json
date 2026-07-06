@@ -1,0 +1,9 @@
+{
+  "id": "backend-api",
+  "name": "Backend API",
+  "emoji": "⚙️",
+  "description": "A stack for backend API development. Code intelligence, LLM gateway, caching, and repo packing.",
+  "items": ["context7", "leanctx", "litellm", "gptcache", "repomix", "md-bestpractice"],
+  "createdAt": "2026-07-05T12:00:00.000Z",
+  "updatedAt": "2026-07-05T12:00:00.000Z"
+}

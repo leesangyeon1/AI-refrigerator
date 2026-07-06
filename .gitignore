@@ -1,0 +1,6 @@
+.DS_Store
+node_modules/
+data/config.json
+data/state.json
+data/custom-items.json
+*.bak-*
