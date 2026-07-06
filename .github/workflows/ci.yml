@@ -24,7 +24,7 @@ jobs:
       - name: Validate catalog + presets JSON
         run: |
           node -e "const c=require('./data/catalog.json');const ids=c.map(i=>i.id);if(new Set(ids).size!==ids.length)throw new Error('duplicate catalog ids');const T=new Set(['skill','plugin','mcp','agent','md','tool','cli']);for(const i of c){if(!i.id||!i.name||!T.has(i.type))throw new Error('bad item '+JSON.stringify(i).slice(0,80))}console.log('catalog OK',c.length)"
-          node -e "const fs=require('fs'),cat=new Set(require('./data/catalog.json').map(i=>i.id));for(const f of fs.readdirSync('presets')){if(!f.endsWith('.json'))continue;const p=JSON.parse(fs.readFileSync('presets/'+f,'utf8'));if(!p.id||!Array.isArray(p.items))throw new Error('bad preset '+f);for(const id of p.items)if(!cat.has(id))throw new Error(f+' references unknown item '+id)}console.log('presets OK')"
+          node -e "const fs=require('fs'),cat=new Set(require('./data/catalog.json').map(i=>i.id));let warn=0;for(const f of fs.readdirSync('presets')){if(!f.endsWith('.json'))continue;const p=JSON.parse(fs.readFileSync('presets/'+f,'utf8'));if(!p.id||!Array.isArray(p.items))throw new Error('bad preset '+f);const miss=p.items.filter(id=>!cat.has(id));if(miss.length){warn++;console.log('::warning title=preset '+f+'::references local/custom items not in the built-in catalog: '+miss.join(', '))}}console.log('presets OK'+(warn?(' ('+warn+' preset(s) reference local-only items)'):''))"
 
       - name: Smoke test (server boots + core endpoints + CSRF guard)
         run: |
