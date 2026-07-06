@@ -939,6 +939,66 @@ function parseClaudeArgs(args) {
   return { settingsPath: settings ? settings[1] : null, mcpPath: mcp ? mcp[1] : null, resume: resume ? resume[1] : null, continue: cont };
 }
 
+// Compute the config actually active for a running Claude Code session by reading
+// its real config sources: global ~/.claude, the project's .claude/.mcp.json/CLAUDE.md,
+// and any --settings/--mcp-config files it was launched with.
+async function listDirNames(dir) {
+  try {
+    // Include symlinked entries too — plugin-provided skills/agents are symlinks.
+    return (await fsp.readdir(dir, { withFileTypes: true }))
+      .filter((e) => (e.isDirectory() || e.isSymbolicLink()) && !e.name.startsWith('.'))
+      .map((e) => e.name);
+  } catch {
+    return [];
+  }
+}
+async function inspectClaude(cwd, settingsFlag, mcpFlag) {
+  const home = os.homedir();
+  const b = emptyBreakdown();
+  // Plugins: merge enabledPlugins from global + project (+ local) + --settings flag
+  const pluginMap = {};
+  const settingsSources = [path.join(home, '.claude', 'settings.json'), path.join(home, '.claude', 'settings.local.json')];
+  if (cwd && cwd !== home) {
+    settingsSources.push(path.join(cwd, '.claude', 'settings.json'), path.join(cwd, '.claude', 'settings.local.json'));
+  }
+  if (settingsFlag) settingsSources.push(settingsFlag);
+  for (const s of settingsSources) {
+    const j = await readJsonOrNull(s);
+    if (j && j.enabledPlugins && typeof j.enabledPlugins === 'object') Object.assign(pluginMap, j.enabledPlugins);
+  }
+  b.plugin = Object.entries(pluginMap).filter(([, v]) => v).map(([k]) => k);
+  // Skills & agents: global + project directories
+  const skillDirs = [path.join(home, '.claude', 'skills')];
+  const agentDirs = [path.join(home, '.claude', 'agents')];
+  if (cwd && cwd !== home) {
+    skillDirs.push(path.join(cwd, '.claude', 'skills'));
+    agentDirs.push(path.join(cwd, '.claude', 'agents'));
+  }
+  const skillSet = new Set();
+  for (const d of skillDirs) (await listDirNames(d)).forEach((n) => skillSet.add(n));
+  const agentSet = new Set();
+  for (const d of agentDirs) (await listDirNames(d)).forEach((n) => agentSet.add(n));
+  b.skill = [...skillSet];
+  b.agent = [...agentSet];
+  // MCP servers: global ~/.claude.json + project .mcp.json + --mcp-config flag
+  const mcpSet = new Set();
+  const globalMcp = await readJsonOrNull(path.join(home, '.claude.json'));
+  if (globalMcp && globalMcp.mcpServers) Object.keys(globalMcp.mcpServers).forEach((k) => mcpSet.add(k));
+  if (cwd) {
+    const projMcp = await readJsonOrNull(path.join(cwd, '.mcp.json'));
+    if (projMcp && projMcp.mcpServers) Object.keys(projMcp.mcpServers).forEach((k) => mcpSet.add(k));
+  }
+  if (mcpFlag) {
+    const flagMcp = await readJsonOrNull(mcpFlag);
+    if (flagMcp && flagMcp.mcpServers) Object.keys(flagMcp.mcpServers).forEach((k) => mcpSet.add(k));
+  }
+  b.mcp = [...mcpSet];
+  // CLAUDE.md in the project and/or global
+  if (cwd && (await exists(path.join(cwd, 'CLAUDE.md')))) b.md.push('CLAUDE.md');
+  if (await exists(path.join(home, '.claude', 'CLAUDE.md'))) b.md.push('~/.claude/CLAUDE.md');
+  return b;
+}
+
 async function handleSessions(res) {
   const items = await loadMergedCatalog();
   const byId = new Map(items.map((i) => [i.id, i]));
@@ -978,14 +1038,22 @@ async function handleSessions(res) {
     }
   }
 
-  // 3) Shape each running session
+  // 3) Shape each running session with its EFFECTIVE (actually active) config,
+  //    read from that session's real config sources — even if not from a preset.
   const running = [];
   for (const p of procs) {
     const a = parseClaudeArgs(p.args);
+    const cwd = cwds[p.pid] || null;
     let mode = 'fresh';
     let label = 'New session';
+    let presetName = null;
     if (a.settingsPath && a.settingsPath.includes(path.join('.ai-refrigerator', 'session-presets'))) {
       mode = 'preset';
+      const base = path.basename(a.settingsPath);
+      const id = base.endsWith('.settings.json') ? base.slice(0, -'.settings.json'.length) : null;
+      const preset = id ? await loadPreset(id) : null;
+      presetName = preset ? preset.name || id : id;
+      label = presetName || 'Preset session';
     } else if (a.resume) {
       mode = 'resume';
       label = `Resumed · ${a.resume.slice(0, 8)}`;
@@ -993,32 +1061,20 @@ async function handleSessions(res) {
       mode = 'continue';
       label = 'Continued session';
     }
-    const s = {
+    const breakdown = await inspectClaude(cwd, a.settingsPath, a.mcpPath);
+    running.push({
       pid: p.pid,
-      cwd: cwds[p.pid] || null,
+      cwd,
       mode,
       label,
+      presetName,
       settingsPath: a.settingsPath,
       mcpPath: a.mcpPath,
       resume: a.resume || null,
-      presetName: null,
-      plugins: [],
-      mcpServers: [],
-      breakdown: emptyBreakdown(),
-    };
-    if (mode === 'preset') {
-      const base = path.basename(a.settingsPath);
-      const id = base.endsWith('.settings.json') ? base.slice(0, -'.settings.json'.length) : null;
-      const preset = id ? await loadPreset(id) : null;
-      s.presetName = preset ? preset.name || id : id;
-      s.label = s.presetName || 'Preset session';
-      if (preset) s.breakdown = buildBreakdown(preset, byId);
-      const st = (await readJsonOrNull(a.settingsPath)) || {};
-      s.plugins = Object.entries(st.enabledPlugins || {}).filter(([, v]) => v).map(([k]) => k);
-      const mc = a.mcpPath ? await readJsonOrNull(a.mcpPath) : null;
-      s.mcpServers = mc && mc.mcpServers ? Object.keys(mc.mcpServers) : [];
-    }
-    running.push(s);
+      plugins: breakdown.plugin,
+      mcpServers: breakdown.mcp,
+      breakdown,
+    });
   }
 
   // 4) Refrigerator-generated session configs (available to launch), flagged if running

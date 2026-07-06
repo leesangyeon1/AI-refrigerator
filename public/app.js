@@ -395,7 +395,7 @@ async function renderSessions() {
   let html = '';
   html += running.length ? running.map(s => {
     const b = s.breakdown || {};
-    const isPreset = s.mode === 'preset';
+    const active = (b.plugin || []).length + (b.mcp || []).length + (b.skill || []).length + (b.agent || []).length;
     return `<div class="item-card" style="margin-bottom:8px">
       <div class="item-top">
         <span class="item-name">🖥️ ${esc(s.presetName || s.label)} <span class="muted small">· pid ${esc(String(s.pid))}</span></span>
@@ -403,10 +403,10 @@ async function renderSessions() {
       </div>
       <div class="kv"><span class="k">Folder</span><span class="muted small">${esc(s.cwd || 'unknown')}</span></div>
       <div class="kv"><span class="k">Type</span><span>${esc(modeBadge[s.mode] || 'Session')}${s.resume ? ' <span class="muted small">' + esc(s.resume.slice(0, 12)) + '</span>' : ''}</span></div>
-      ${isPreset ? `${chips(b)}
-        <div class="kv"><span class="k">Applied</span><span>${s.plugins.length} plugin(s) · ${s.mcpServers.length} MCP server(s)</span></div>
+      ${active ? `${chips(b)}
+        <div class="kv"><span class="k">Active</span><span>${(b.plugin || []).length} plugin(s) · ${(b.mcp || []).length} MCP · ${(b.skill || []).length} skill(s)</span></div>
         ${line('Plugins', b.plugin)}${line('MCP', b.mcp)}${line('Skills', b.skill)}${line('Agents', b.agent)}${line('CLAUDE.md', b.md)}`
-      : `<div class="muted small">Not launched from a refrigerator preset — its plugins/skills aren't tracked here.</div>`}
+      : `<div class="muted small">No plugins/skills/MCP detected active for this session.</div>`}
     </div>`;
   }).join('') : '<div class="empty-state">No running <code>claude</code> CLI sessions detected right now.</div>';
 
