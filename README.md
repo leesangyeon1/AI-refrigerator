@@ -1,5 +1,7 @@
 # 🧊 AI Refrigerator
 
+<p align="center"><img src="public/icon.png" width="140" alt="AI Refrigerator app icon"></p>
+
 **A CC Switch-style preset manager for AI coding agents.**
 
 A local web app that collects Skills / Plugins / MCP servers / Agent repos / CLAUDE.md templates into a "Refrigerator (ingredient store)" and lets you combine them into purpose-built **Presets (recipes)** that you can save, load, apply, and export.
