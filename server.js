@@ -920,6 +920,60 @@ async function handleStateGet(res) {
   ok(res, raw && typeof raw === 'object' ? raw : { ...DEFAULT_STATE });
 }
 
+async function handleSessions(res) {
+  let files;
+  try {
+    files = (await fsp.readdir(SESSION_DIR)).filter((f) => f.endsWith('.settings.json'));
+  } catch {
+    return ok(res, { sessions: [] });
+  }
+  const items = await loadMergedCatalog();
+  const byId = new Map(items.map((i) => [i.id, i]));
+  // Best-effort detection of running `claude --settings <path>` processes (macOS/Linux).
+  const ps = await run('ps', ['-Ao', 'args='], { timeout: 5000 });
+  const psOut = ps.ok ? ps.stdout || '' : '';
+  const sessions = [];
+  for (const f of files) {
+    const id = f.slice(0, -'.settings.json'.length);
+    const settingsPath = path.join(SESSION_DIR, f);
+    const settings = (await readJsonOrNull(settingsPath)) || {};
+    const plugins = Object.entries(settings.enabledPlugins || {}).filter(([, v]) => v).map(([k]) => k);
+    const mcpPath = path.join(SESSION_DIR, `${id}.mcp.json`);
+    const mcpRaw = await readJsonOrNull(mcpPath);
+    const mcpServers = mcpRaw && mcpRaw.mcpServers && typeof mcpRaw.mcpServers === 'object' ? Object.keys(mcpRaw.mcpServers) : [];
+    let generatedAt = null;
+    try {
+      generatedAt = (await fsp.stat(settingsPath)).mtime.toISOString();
+    } catch {}
+    // Full breakdown from the source preset (which skills/agents/md/tools it came from)
+    const preset = await loadPreset(id);
+    const breakdown = { plugin: [], mcp: [], skill: [], agent: [], md: [], tool: [], cli: [] };
+    if (preset) {
+      for (const iid of preset.items || []) {
+        const it = byId.get(iid);
+        if (it && breakdown[it.type]) breakdown[it.type].push(it.name || iid);
+      }
+    }
+    let command = `claude --settings ${settingsPath}`;
+    if (mcpServers.length) command += ` --mcp-config ${mcpPath}`;
+    sessions.push({
+      id,
+      presetName: preset ? preset.name || id : id,
+      presetExists: Boolean(preset),
+      settingsPath,
+      mcpPath: mcpServers.length ? mcpPath : null,
+      generatedAt,
+      running: psOut.includes(settingsPath),
+      command,
+      plugins,
+      mcpServers,
+      breakdown,
+    });
+  }
+  sessions.sort((a, b) => (b.generatedAt || '').localeCompare(a.generatedAt || ''));
+  ok(res, { sessions });
+}
+
 // ── Static files ──────────────────────────────────────────
 async function serveStatic(res, pathname) {
   let p;
@@ -1021,6 +1075,7 @@ async function handle(req, res) {
   if (method === 'GET' && pathname === '/api/config') return handleConfigGet(res);
   if (method === 'POST' && pathname === '/api/config') return handleConfigPost(req, res);
   if (method === 'GET' && pathname === '/api/state') return handleStateGet(res);
+  if (method === 'GET' && pathname === '/api/sessions') return handleSessions(res);
 
   fail(res, 404, 'The requested API path was not found');
 }

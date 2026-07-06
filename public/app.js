@@ -368,6 +368,56 @@ function renderDashboard() {
       <span class="muted">${esc(fmtTime(h.at))}</span>
     </div>`;
   }).join('') : '<div class="empty-state">No apply history yet.</div>';
+
+  renderSessions();
+}
+
+async function renderSessions() {
+  const el = $('#sessionsList');
+  if (!el) return;
+  el.innerHTML = loadingBox('Loading sessions…');
+  let d;
+  try {
+    d = await api('/api/sessions', { silent: true });
+  } catch {
+    el.innerHTML = '<div class="empty-state">Failed to load sessions.</div>';
+    return;
+  }
+  const sess = d.sessions || [];
+  const cnt = $('#sessionCount');
+  if (cnt) cnt.textContent = sess.length ? `(${sess.filter(s => s.running).length} open / ${sess.length})` : '';
+  if (!sess.length) {
+    el.innerHTML = '<div class="empty-state">No session configs yet. Generate one in <a href="#apply">Apply &amp; Export → Session</a> 🎯</div>';
+    return;
+  }
+  const chip = (label, arr, cls) => (arr && arr.length) ? `<span class="sum-chip"><span class="badge ${cls}">${label}</span> ${arr.length}</span>` : '';
+  const line = (k, arr) => (arr && arr.length) ? `<div class="kv"><span class="k">${k}</span><span class="muted small">${arr.map(esc).join(', ')}</span></div>` : '';
+  el.innerHTML = sess.map(s => {
+    const b = s.breakdown || {};
+    return `<div class="item-card" style="margin-bottom:8px">
+      <div class="item-top">
+        <span class="item-name">🎯 ${esc(s.presetName)}${s.presetExists ? '' : ' <span class="muted small">(preset deleted)</span>'}</span>
+        <span class="pill ${s.running ? 'pill-on' : 'pill-off'}">${s.running ? '● Open' : '○ Not running'}</span>
+      </div>
+      <div class="sum-chips">
+        ${chip('Plugin', b.plugin, 'type-plugin')}
+        ${chip('MCP', b.mcp, 'type-mcp')}
+        ${chip('Skill', b.skill, 'type-skill')}
+        ${chip('Agent', b.agent, 'type-agent')}
+        ${chip('CLAUDE.md', b.md, 'type-md')}
+        ${chip('Tool', b.tool, 'type-tool')}
+        ${chip('CLI', b.cli, 'type-cli')}
+      </div>
+      <div class="kv"><span class="k">Applied now</span><span>${s.plugins.length} plugin(s) · ${s.mcpServers.length} MCP server(s)${s.generatedAt ? ' · ' + esc(fmtTime(s.generatedAt)) : ''}</span></div>
+      ${line('Plugins', b.plugin)}
+      ${line('MCP', b.mcp)}
+      ${line('Skills', b.skill)}
+      ${line('Agents', b.agent)}
+      ${line('CLAUDE.md', b.md)}
+      ${(b.tool && b.tool.length) || (b.cli && b.cli.length) ? line('Tools/CLI', [...(b.tool || []), ...(b.cli || [])]) : ''}
+      <div class="code-row"><code>${esc(s.command)}</code><button class="btn btn-sm" data-action="copy-text" data-copy="${esc(s.command)}">Copy</button></div>
+    </div>`;
+  }).join('');
 }
 
 async function quickSession(presetId, btn) {
@@ -1495,6 +1545,7 @@ function initEvents() {
             toast('Status refreshed');
           })();
           break;
+        case 'refresh-sessions': renderSessions(); break;
         case 'quick-session': quickSession(el.dataset.preset, el); break;
         case 'quick-global': globalApplyFlow(el.dataset.preset, el); break;
         case 'open-custom-modal': showModal('customModal'); $('#cmName').focus(); break;
