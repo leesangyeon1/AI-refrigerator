@@ -16,6 +16,7 @@ const CUSTOM_PATH = path.join(DATA_DIR, 'custom-items.json');
 const CONFIG_PATH = path.join(DATA_DIR, 'config.json');
 const STATE_PATH = path.join(DATA_DIR, 'state.json');
 const SESSIONS_PATH = path.join(DATA_DIR, 'sessions.json');
+const SESSION_LABELS_PATH = path.join(DATA_DIR, 'session-labels.json');
 const SESSION_DIR = path.join(os.homedir(), '.ai-refrigerator', 'session-presets');
 
 const MAX_BODY = 2 * 1024 * 1024;
@@ -795,13 +796,21 @@ async function handleApply(req, res) {
     await writeJsonFile(settingsPath, { enabledPlugins: Object.fromEntries(cls.pluginItems.map((i) => [i.plugin, true])) });
     // Session scope enables plugins AND MCP servers: plugins via --settings,
     // MCP servers via --mcp-config (both are per-session, nothing permanent).
-    let command = `claude --settings ${settingsPath}`;
     let mcpPath = null;
     if (cls.mcpItems.length) {
       mcpPath = path.join(SESSION_DIR, `${preset.id}.mcp.json`);
       await writeJsonFile(mcpPath, { mcpServers: Object.fromEntries(cls.mcpItems.map((i) => [i.id, i.mcpConfig])) });
-      command += ` --mcp-config ${mcpPath}`;
     }
+    // Optionally scope the command to a specific session: prefix `cd <cwd>` and
+    // add `--resume <id>` so the preset re-applies when that session is relaunched.
+    const tgtCwd = typeof body.cwd === 'string' && body.cwd.trim() ? body.cwd.trim() : null;
+    const tgtSid = typeof body.sessionId === 'string' && body.sessionId.trim() ? body.sessionId.trim() : null;
+    const cmdParts = ['claude'];
+    if (tgtSid) cmdParts.push('--resume', shq(tgtSid));
+    cmdParts.push('--settings', settingsPath);
+    if (mcpPath) cmdParts.push('--mcp-config', mcpPath);
+    let command = cmdParts.join(' ');
+    if (tgtCwd) command = `cd ${shq(tgtCwd)} && ${command}`;
     await recordApply(preset.id, 'session', settingsPath);
     // Skills / tools / agents / md can't be "enabled" per-session — they must be
     // installed. Surface them so the UI can point the user to the install script.
@@ -1003,6 +1012,8 @@ async function inspectClaude(cwd, settingsFlag, mcpFlag) {
 async function handleSessions(res) {
   const items = await loadMergedCatalog();
   const byId = new Map(items.map((i) => [i.id, i]));
+  const labelsRaw = await readJsonOrNull(SESSION_LABELS_PATH);
+  const labels = labelsRaw && typeof labelsRaw === 'object' && !Array.isArray(labelsRaw) ? labelsRaw : {};
 
   // 1) Enumerate ALL running `claude` CLI processes (not the desktop app / plugin procs / this server)
   const ps = await run('ps', ['-Ao', 'pid=,args='], { timeout: 6000 });
@@ -1068,6 +1079,7 @@ async function handleSessions(res) {
       cwd,
       mode,
       label,
+      customLabel: cwd ? labels[cwd] || null : null,
       presetName,
       settingsPath: a.settingsPath,
       mcpPath: a.mcpPath,
@@ -1266,6 +1278,21 @@ async function handleSessionResume(req, res) {
   ok(res, { command, launched: launch });
 }
 
+// Label (rename) a running session by its working directory — persisted so the
+// custom name shows up whenever that folder's session is detected again.
+async function handleSessionLabel(req, res) {
+  const body = await readJsonBody(req);
+  const cwd = typeof body.cwd === 'string' ? body.cwd.trim() : '';
+  if (!cwd) return fail(res, 400, 'cwd is required');
+  const label = typeof body.label === 'string' ? body.label.trim() : '';
+  const raw = await readJsonOrNull(SESSION_LABELS_PATH);
+  const labels = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {};
+  if (label) labels[cwd] = label;
+  else delete labels[cwd];
+  await writeJsonFile(SESSION_LABELS_PATH, labels);
+  ok(res, { cwd, label: label || null });
+}
+
 // ── Static files ──────────────────────────────────────────
 async function serveStatic(res, pathname) {
   let p;
@@ -1376,6 +1403,7 @@ async function handle(req, res) {
     if (method === 'DELETE') return handleSavedSessionDelete(res, id);
   }
   if (method === 'POST' && pathname === '/api/sessions/resume') return handleSessionResume(req, res);
+  if (method === 'POST' && pathname === '/api/sessions/label') return handleSessionLabel(req, res);
 
   fail(res, 404, 'The requested API path was not found');
 }
@@ -1389,6 +1417,7 @@ async function ensureRuntimeFiles() {
     [STATE_PATH, DEFAULT_STATE],
     [CUSTOM_PATH, []],
     [SESSIONS_PATH, []],
+    [SESSION_LABELS_PATH, {}],
   ];
   for (const [p, def] of defaults) {
     if (!(await exists(p))) await writeJsonFile(p, def);

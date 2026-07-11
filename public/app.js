@@ -425,10 +425,10 @@ async function renderSessions() {
     const active = (b.plugin || []).length + (b.mcp || []).length + (b.skill || []).length + (b.agent || []).length;
     const presetId = s.mode === 'preset' && s.settingsPath && s.settingsPath.endsWith('.settings.json')
       ? s.settingsPath.split('/').pop().slice(0, -'.settings.json'.length) : '';
-    const defName = s.presetName || (s.cwd ? s.cwd.split('/').pop() : '') || 'session';
+    const defName = s.customLabel || s.presetName || (s.cwd ? s.cwd.split('/').pop() : '') || 'session';
     return `<div class="item-card sess-drop" style="margin-bottom:8px" data-cwd="${esc(s.cwd || '')}">
       <div class="item-top">
-        <span class="item-name">🖥️ ${esc(s.presetName || s.label)} <span class="muted small">· pid ${esc(String(s.pid))}</span></span>
+        <span class="item-name">${s.customLabel ? '🏷 ' : '🖥️ '}${esc(s.customLabel || s.presetName || s.label)} <span class="muted small">· pid ${esc(String(s.pid))}</span></span>
         <span class="pill pill-on">● Running</span>
       </div>
       <div class="kv"><span class="k">Folder</span><span class="muted small">${esc(s.cwd || 'unknown')}</span></div>
@@ -438,7 +438,8 @@ async function renderSessions() {
         ${line('Plugins', b.plugin)}${line('MCP', b.mcp)}${line('Skills', b.skill)}${line('Agents', b.agent)}${line('CLAUDE.md', b.md)}`
       : `<div class="muted small">No plugins/skills/MCP detected active for this session.</div>`}
       <div class="row-end" style="margin-top:8px;gap:6px">
-        <button class="btn btn-sm" data-action="apply-preset-session">🎯 Apply preset</button>
+        <button class="btn btn-sm" data-action="apply-preset-session" data-cwd="${esc(s.cwd || '')}" data-sid="${esc(s.resume || '')}">🎯 Apply preset</button>
+        <button class="btn btn-sm" data-action="session-rename" data-cwd="${esc(s.cwd || '')}" data-label="${esc(s.customLabel || '')}">✎ Rename</button>
         <button class="btn btn-sm btn-primary" data-action="fridge-save" data-cwd="${esc(s.cwd || '')}" data-preset="${esc(presetId)}" data-name="${esc(defName)}" data-sid="${esc(s.resume || '')}">🧊 Save to fridge</button>
       </div>
     </div>`;
@@ -579,10 +580,22 @@ async function pickPresetForSaved(anchor, id) {
   attachPresetToSaved(id, v);
 }
 
-async function pickPresetForRunning(anchor) {
+async function pickPresetForRunning(anchor, cwd, sid) {
   if (!S.presets.length) { toast('No presets yet — build one first', 'error'); return; }
   const v = await openPicker({ title: 'Apply preset to session', anchor, options: S.presets.map(p => ({ label: `${p.emoji || '🍳'} ${p.name}`, value: p.id })) });
-  if (v) applyPresetToSession(v);
+  if (v) applyPresetToSession(v, { cwd: cwd || undefined, sessionId: sid || undefined });
+}
+
+// Label / rename a running session (persisted per folder).
+async function renameRunningSession(cwd, current) {
+  if (!cwd) { toast('This session has no known folder to label', 'error'); return; }
+  const name = await openPrompt({ title: 'Rename session', label: 'Session label', value: current || '' });
+  if (name === null) return;
+  try {
+    await api('/api/sessions/label', { method: 'POST', body: { cwd, label: name.trim() } });
+    toast(name.trim() ? '✎ Session labeled' : 'Label cleared');
+    renderSessions();
+  } catch { /* toast handled */ }
 }
 
 async function quickSession(presetId, btn) {
@@ -933,7 +946,7 @@ async function colMenu(anchor, presetId) {
       { label: '🗑 Delete', value: 'del' },
     ],
   });
-  if (v === 'session') applyPresetToSession(presetId);
+  if (v === 'session') applyPresetToSessionChoose(anchor, presetId);
   else if (v === 'apply') openInApply(presetId);
   else if (v === 'export') exportPresetJson(presetId);
   else if (v === 'dup') duplicatePreset(presetId);
@@ -942,17 +955,46 @@ async function colMenu(anchor, presetId) {
 
 // Apply a preset to a session straight from the builder: generate the session
 // config (plugins via --settings, MCP via --mcp-config) and copy the launch command.
-async function applyPresetToSession(presetId) {
+async function applyPresetToSession(presetId, target = {}) {
   const p = S.presets.find(x => x.id === presetId);
   if (!p) return;
   if (!(p.items || []).length) { toast('This preset is empty — add ingredients first', 'error'); return; }
   try {
-    const d = await api('/api/apply', { method: 'POST', body: { presetId, mode: 'session' } });
+    const body = { presetId, mode: 'session' };
+    if (target.cwd) body.cwd = target.cwd;
+    if (target.sessionId) body.sessionId = target.sessionId;
+    const d = await api('/api/apply', { method: 'POST', body });
     const ni = (d.needInstall || []).length;
-    await copyText(d.command || '', `🎯 Session command copied — ${d.pluginCount ?? 0} plugin(s), ${d.mcpCount ?? 0} MCP${ni ? ` · ${ni} need install` : ''}`);
+    const where = target.cwd ? ` for ${target.cwd.split('/').pop()}` : '';
+    await copyText(d.command || '', `🎯 Session command copied${where} — ${d.pluginCount ?? 0} plugin(s), ${d.mcpCount ?? 0} MCP${ni ? ` · ${ni} need install` : ''}`);
     await reloadState();
     if (S.ui.view === 'dashboard') renderDashboard();
   } catch { /* api() handles the toast */ }
+}
+
+// Ask which session (running or saved) to apply a preset to, then do it.
+async function applyPresetToSessionChoose(anchor, presetId) {
+  const p = S.presets.find(x => x.id === presetId);
+  if (!p) return;
+  if (!(p.items || []).length) { toast('This preset is empty — add ingredients first', 'error'); return; }
+  let running = [];
+  try { const d = await api('/api/sessions', { silent: true }); running = d.running || []; } catch { /* ignore */ }
+  await reloadSaved();
+  const options = [];
+  running.forEach((s, i) => options.push({
+    label: `🖥️ ${s.customLabel || s.presetName || s.label || 'Session'} · ${s.cwd ? s.cwd.split('/').pop() : '?'} (pid ${s.pid})`,
+    value: `run:${i}`,
+  }));
+  S.saved.forEach(s => options.push({ label: `🧊 ${s.name} (saved)`, value: `saved:${s.id}` }));
+  options.push({ label: '📋 Just copy the command', value: 'copy' });
+  const v = await openPicker({ title: `Apply "${p.name}" to…`, anchor, options });
+  if (!v) return;
+  if (v === 'copy') return applyPresetToSession(presetId);
+  if (v.startsWith('saved:')) return attachPresetToSaved(v.slice(6), presetId);
+  if (v.startsWith('run:')) {
+    const s = running[+v.slice(4)];
+    if (s) return applyPresetToSession(presetId, { cwd: s.cwd, sessionId: s.resume });
+  }
 }
 
 // Jump to Apply & Export with this preset pre-selected in Session mode.
@@ -1769,7 +1811,8 @@ function initEvents() {
         case 'fridge-apply': pickPresetForSaved(el, el.dataset.id); break;
         case 'fridge-rename': renameSaved(el.dataset.id); break;
         case 'fridge-delete': deleteSaved(el.dataset.id); break;
-        case 'apply-preset-session': pickPresetForRunning(el); break;
+        case 'apply-preset-session': pickPresetForRunning(el, el.dataset.cwd, el.dataset.sid); break;
+        case 'session-rename': renameRunningSession(el.dataset.cwd, el.dataset.label); break;
         case 'quick-session': quickSession(el.dataset.preset, el); break;
         case 'quick-global': globalApplyFlow(el.dataset.preset, el); break;
         case 'open-custom-modal': showModal('customModal'); $('#cmName').focus(); break;
