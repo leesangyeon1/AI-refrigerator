@@ -1050,7 +1050,31 @@ async function handleSessions(res) {
     }
   }
 
-  // 3) Shape each running session with its EFFECTIVE (actually active) config,
+  // 3) Give each running process a DISTINCT session UUID so save/rename target ONE
+  //    session — not every session sharing a folder. Resumed sessions use their
+  //    --resume UUID; each fresh session gets one recent transcript from its dir.
+  const sidByPid = {};
+  const usedIds = new Set();
+  for (const p of procs) {
+    const r = parseClaudeArgs(p.args).resume;
+    if (r) { sidByPid[p.pid] = r; usedIds.add(r); }
+  }
+  const freshByCwd = new Map();
+  for (const p of procs) {
+    if (sidByPid[p.pid]) continue;
+    const c = cwds[p.pid] || '';
+    if (!freshByCwd.has(c)) freshByCwd.set(c, []);
+    freshByCwd.get(c).push(p);
+  }
+  for (const [cwd, list] of freshByCwd) {
+    const pool = (await recentSessionIds(cwd)).filter((id) => !usedIds.has(id));
+    list.forEach((p, i) => {
+      const id = pool[i] || null;
+      if (id) { sidByPid[p.pid] = id; usedIds.add(id); }
+    });
+  }
+
+  // 4) Shape each running session with its EFFECTIVE (actually active) config,
   //    read from that session's real config sources — even if not from a preset.
   const running = [];
   for (const p of procs) {
@@ -1079,18 +1103,19 @@ async function handleSessions(res) {
       cwd,
       mode,
       label,
-      customLabel: cwd ? labels[cwd] || null : null,
+      customLabel: sidByPid[p.pid] ? labels[sidByPid[p.pid]] || null : null,
       presetName,
       settingsPath: a.settingsPath,
       mcpPath: a.mcpPath,
       resume: a.resume || null,
+      sessionId: sidByPid[p.pid] || null,
       plugins: breakdown.plugin,
       mcpServers: breakdown.mcp,
       breakdown,
     });
   }
 
-  // 4) Refrigerator-generated session configs (available to launch), flagged if running
+  // 5) Refrigerator-generated session configs (available to launch), flagged if running
   const configs = [];
   try {
     for (const f of (await fsp.readdir(SESSION_DIR)).filter((x) => x.endsWith('.settings.json'))) {
@@ -1134,24 +1159,28 @@ async function loadSavedSessions() {
 function claudeProjectDir(cwd) {
   return String(cwd || '').replace(/[^a-zA-Z0-9]/g, '-');
 }
-async function detectLatestSessionId(cwd) {
-  if (!cwd) return null;
+// UUIDs of a folder's session transcripts, most-recently-active first.
+async function recentSessionIds(cwd) {
+  if (!cwd) return [];
   const dir = path.join(os.homedir(), '.claude', 'projects', claudeProjectDir(cwd));
   let files;
   try {
     files = (await fsp.readdir(dir)).filter((f) => f.endsWith('.jsonl'));
   } catch {
-    return null;
+    return [];
   }
-  let best = null;
+  const withTime = [];
   for (const f of files) {
     let mtime = 0;
     try {
       mtime = (await fsp.stat(path.join(dir, f))).mtimeMs;
     } catch {}
-    if (!best || mtime > best.mtime) best = { id: f.slice(0, -'.jsonl'.length), mtime };
+    withTime.push({ id: f.slice(0, -'.jsonl'.length), mtime });
   }
-  return best ? best.id : null;
+  return withTime.sort((a, b) => b.mtime - a.mtime).map((x) => x.id);
+}
+async function detectLatestSessionId(cwd) {
+  return (await recentSessionIds(cwd))[0] || null;
 }
 // Write the per-session settings/mcp files for a preset (same shape as session
 // apply) and return their paths. Used when resuming a fridge session with a preset.
@@ -1278,19 +1307,19 @@ async function handleSessionResume(req, res) {
   ok(res, { command, launched: launch });
 }
 
-// Label (rename) a running session by its working directory — persisted so the
-// custom name shows up whenever that folder's session is detected again.
+// Label (rename) ONE session by its session UUID — like Claude Code's /rename.
+// Persisted so the name follows that specific session, even across resume.
 async function handleSessionLabel(req, res) {
   const body = await readJsonBody(req);
-  const cwd = typeof body.cwd === 'string' ? body.cwd.trim() : '';
-  if (!cwd) return fail(res, 400, 'cwd is required');
+  const sessionId = typeof body.sessionId === 'string' ? body.sessionId.trim() : '';
+  if (!sessionId) return fail(res, 400, 'sessionId is required (this session could not be identified)');
   const label = typeof body.label === 'string' ? body.label.trim() : '';
   const raw = await readJsonOrNull(SESSION_LABELS_PATH);
   const labels = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {};
-  if (label) labels[cwd] = label;
-  else delete labels[cwd];
+  if (label) labels[sessionId] = label;
+  else delete labels[sessionId];
   await writeJsonFile(SESSION_LABELS_PATH, labels);
-  ok(res, { cwd, label: label || null });
+  ok(res, { sessionId, label: label || null });
 }
 
 // ── Static files ──────────────────────────────────────────

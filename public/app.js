@@ -438,9 +438,9 @@ async function renderSessions() {
         ${line('Plugins', b.plugin)}${line('MCP', b.mcp)}${line('Skills', b.skill)}${line('Agents', b.agent)}${line('CLAUDE.md', b.md)}`
       : `<div class="muted small">No plugins/skills/MCP detected active for this session.</div>`}
       <div class="row-end" style="margin-top:8px;gap:6px">
-        <button class="btn btn-sm" data-action="apply-preset-session" data-cwd="${esc(s.cwd || '')}" data-sid="${esc(s.resume || '')}">🎯 Apply preset</button>
-        <button class="btn btn-sm" data-action="session-rename" data-cwd="${esc(s.cwd || '')}" data-label="${esc(s.customLabel || '')}">✎ Rename</button>
-        <button class="btn btn-sm btn-primary" data-action="fridge-save" data-cwd="${esc(s.cwd || '')}" data-preset="${esc(presetId)}" data-name="${esc(defName)}" data-sid="${esc(s.resume || '')}">🧊 Save to fridge</button>
+        <button class="btn btn-sm" data-action="apply-preset-session" data-cwd="${esc(s.cwd || '')}" data-sid="${esc(s.sessionId || '')}">🎯 Apply preset</button>
+        <button class="btn btn-sm" data-action="session-rename" data-sid="${esc(s.sessionId || '')}" data-label="${esc(s.customLabel || '')}">✎ Rename</button>
+        <button class="btn btn-sm btn-primary" data-action="fridge-save" data-cwd="${esc(s.cwd || '')}" data-preset="${esc(presetId)}" data-name="${esc(defName)}" data-sid="${esc(s.sessionId || '')}">🧊 Save to fridge</button>
       </div>
     </div>`;
   }).join('') : '<div class="empty-state">No running <code>claude</code> CLI sessions detected right now.</div>';
@@ -586,14 +586,14 @@ async function pickPresetForRunning(anchor, cwd, sid) {
   if (v) applyPresetToSession(v, { cwd: cwd || undefined, sessionId: sid || undefined });
 }
 
-// Label / rename a running session (persisted per folder).
-async function renameRunningSession(cwd, current) {
-  if (!cwd) { toast('This session has no known folder to label', 'error'); return; }
+// Label / rename ONE session by its UUID (like Claude Code's /rename).
+async function renameRunningSession(sessionId, current) {
+  if (!sessionId) { toast("This session couldn't be identified, so it can't be renamed", 'error'); return; }
   const name = await openPrompt({ title: 'Rename session', label: 'Session label', value: current || '' });
   if (name === null) return;
   try {
-    await api('/api/sessions/label', { method: 'POST', body: { cwd, label: name.trim() } });
-    toast(name.trim() ? '✎ Session labeled' : 'Label cleared');
+    await api('/api/sessions/label', { method: 'POST', body: { sessionId, label: name.trim() } });
+    toast(name.trim() ? '✎ Session renamed' : 'Label cleared');
     renderSessions();
   } catch { /* toast handled */ }
 }
@@ -993,7 +993,7 @@ async function applyPresetToSessionChoose(anchor, presetId) {
   if (v.startsWith('saved:')) return attachPresetToSaved(v.slice(6), presetId);
   if (v.startsWith('run:')) {
     const s = running[+v.slice(4)];
-    if (s) return applyPresetToSession(presetId, { cwd: s.cwd, sessionId: s.resume });
+    if (s) return applyPresetToSession(presetId, { cwd: s.cwd, sessionId: s.sessionId });
   }
 }
 
@@ -1812,7 +1812,7 @@ function initEvents() {
         case 'fridge-rename': renameSaved(el.dataset.id); break;
         case 'fridge-delete': deleteSaved(el.dataset.id); break;
         case 'apply-preset-session': pickPresetForRunning(el, el.dataset.cwd, el.dataset.sid); break;
-        case 'session-rename': renameRunningSession(el.dataset.cwd, el.dataset.label); break;
+        case 'session-rename': renameRunningSession(el.dataset.sid, el.dataset.label); break;
         case 'quick-session': quickSession(el.dataset.preset, el); break;
         case 'quick-global': globalApplyFlow(el.dataset.preset, el); break;
         case 'open-custom-modal': showModal('customModal'); $('#cmName').focus(); break;
