@@ -44,6 +44,13 @@
         </div>
         <div id="sessionsList" class="list"></div>
       </div>
+      <div class="panel">
+        <div class="panel-head">
+          <h2>🧊 Session Fridge <span class="muted small" id="fridgeCount"></span></h2>
+          <span class="muted small">Save a session and resume it later with its preset — drag a Quick Switch preset onto a card to attach it.</span>
+        </div>
+        <div id="fridgeList" class="list"></div>
+      </div>
       <div class="two-col">
         <div class="panel">
           <div class="panel-head">
@@ -249,6 +256,19 @@
     <div class="modal-actions">
       <button class="btn" id="confirmCancel">Cancel</button>
       <button class="btn btn-primary" id="confirmOk">Confirm</button>
+    </div>
+  </div>
+</div>
+
+<!-- Prompt Modal (name / rename) -->
+<div class="modal-overlay" id="promptModal">
+  <div class="modal">
+    <h3 id="promptTitle">Name</h3>
+    <label class="field-label" id="promptLabel" for="promptInput">Name</label>
+    <input class="input" id="promptInput" autocomplete="off">
+    <div class="modal-actions">
+      <button class="btn" id="promptCancel">Cancel</button>
+      <button class="btn btn-primary" id="promptOk">Save</button>
     </div>
   </div>
 </div>

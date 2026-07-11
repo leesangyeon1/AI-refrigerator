@@ -15,6 +15,7 @@ const CATALOG_PATH = path.join(DATA_DIR, 'catalog.json');
 const CUSTOM_PATH = path.join(DATA_DIR, 'custom-items.json');
 const CONFIG_PATH = path.join(DATA_DIR, 'config.json');
 const STATE_PATH = path.join(DATA_DIR, 'state.json');
+const SESSIONS_PATH = path.join(DATA_DIR, 'sessions.json');
 const SESSION_DIR = path.join(os.homedir(), '.ai-refrigerator', 'session-presets');
 
 const MAX_BODY = 2 * 1024 * 1024;
@@ -1107,6 +1108,164 @@ async function handleSessions(res) {
   ok(res, { running, configs });
 }
 
+// ── Saved sessions ("session fridge") ─────────────────────
+// Persist a running/idle session's identity + preset so it can be resumed
+// later (claude --resume) with the same preset re-applied — literally putting
+// a session in the fridge and taking it back out when needed.
+async function loadSavedSessions() {
+  const raw = await readJsonOrNull(SESSIONS_PATH);
+  return Array.isArray(raw) ? raw : [];
+}
+// Claude Code stores each session transcript at
+// ~/.claude/projects/<escaped-cwd>/<uuid>.jsonl, where the folder name is the
+// absolute cwd with every non-alphanumeric char replaced by '-'.
+function claudeProjectDir(cwd) {
+  return String(cwd || '').replace(/[^a-zA-Z0-9]/g, '-');
+}
+async function detectLatestSessionId(cwd) {
+  if (!cwd) return null;
+  const dir = path.join(os.homedir(), '.claude', 'projects', claudeProjectDir(cwd));
+  let files;
+  try {
+    files = (await fsp.readdir(dir)).filter((f) => f.endsWith('.jsonl'));
+  } catch {
+    return null;
+  }
+  let best = null;
+  for (const f of files) {
+    let mtime = 0;
+    try {
+      mtime = (await fsp.stat(path.join(dir, f))).mtimeMs;
+    } catch {}
+    if (!best || mtime > best.mtime) best = { id: f.slice(0, -'.jsonl'.length), mtime };
+  }
+  return best ? best.id : null;
+}
+// Write the per-session settings/mcp files for a preset (same shape as session
+// apply) and return their paths. Used when resuming a fridge session with a preset.
+async function writeSessionConfig(preset, cls) {
+  await fsp.mkdir(SESSION_DIR, { recursive: true });
+  const settingsPath = path.join(SESSION_DIR, `${preset.id}.settings.json`);
+  await writeJsonFile(settingsPath, { enabledPlugins: Object.fromEntries(cls.pluginItems.map((i) => [i.plugin, true])) });
+  let mcpPath = null;
+  if (cls.mcpItems.length) {
+    mcpPath = path.join(SESSION_DIR, `${preset.id}.mcp.json`);
+    await writeJsonFile(mcpPath, { mcpServers: Object.fromEntries(cls.mcpItems.map((i) => [i.id, i.mcpConfig])) });
+  }
+  return { settingsPath, mcpPath };
+}
+
+async function handleSavedSessionsGet(res) {
+  ok(res, await loadSavedSessions());
+}
+
+async function handleSavedSessionSave(req, res) {
+  const body = await readJsonBody(req);
+  const name = String(body.name || '').trim();
+  if (!name) return fail(res, 400, 'name is required');
+  let cwd = String(body.cwd || '').trim();
+  if (cwd) {
+    if (cwd === '~' || cwd.startsWith('~/')) cwd = path.join(os.homedir(), cwd.slice(1));
+    cwd = path.resolve(cwd);
+  }
+  const presetId = body.presetId ? String(body.presetId) : null;
+  if (presetId && !ID_RE.test(presetId)) return fail(res, 400, 'Invalid presetId');
+  if (presetId && !(await loadPreset(presetId))) return fail(res, 404, `Preset not found: ${presetId}`);
+  // Session UUID: use the one supplied, else auto-detect the newest transcript for this cwd.
+  let sessionId = body.sessionId ? String(body.sessionId).trim() : null;
+  if (!sessionId && cwd) sessionId = await detectLatestSessionId(cwd);
+  // Snapshot the config for at-a-glance display in the fridge.
+  let breakdown = emptyBreakdown();
+  if (presetId) {
+    const items = await loadMergedCatalog();
+    breakdown = buildBreakdown(await loadPreset(presetId), new Map(items.map((i) => [i.id, i])));
+  } else if (cwd) {
+    breakdown = await inspectClaude(cwd, null, null);
+  }
+  const sessions = await loadSavedSessions();
+  const entry = {
+    id: `${kebab(name).slice(0, 40) || 'session'}-${Date.now().toString(36)}`,
+    name,
+    cwd: cwd || null,
+    sessionId: sessionId || null,
+    presetId,
+    breakdown,
+    savedAt: new Date().toISOString(),
+  };
+  sessions.unshift(entry);
+  await writeJsonFile(SESSIONS_PATH, sessions);
+  ok(res, entry);
+}
+
+async function handleSavedSessionUpdate(req, res, id) {
+  const body = await readJsonBody(req);
+  const sessions = await loadSavedSessions();
+  const idx = sessions.findIndex((s) => s.id === id);
+  if (idx === -1) return fail(res, 404, 'Saved session not found');
+  if (body.name !== undefined) {
+    const name = String(body.name).trim();
+    if (!name) return fail(res, 400, 'name cannot be empty');
+    sessions[idx].name = name;
+  }
+  if (body.presetId !== undefined) {
+    const presetId = body.presetId ? String(body.presetId) : null;
+    if (presetId && !ID_RE.test(presetId)) return fail(res, 400, 'Invalid presetId');
+    if (presetId && !(await loadPreset(presetId))) return fail(res, 404, `Preset not found: ${presetId}`);
+    sessions[idx].presetId = presetId;
+  }
+  await writeJsonFile(SESSIONS_PATH, sessions);
+  ok(res, sessions[idx]);
+}
+
+async function handleSavedSessionDelete(res, id) {
+  const sessions = await loadSavedSessions();
+  const next = sessions.filter((s) => s.id !== id);
+  if (next.length === sessions.length) return fail(res, 404, 'Saved session not found');
+  await writeJsonFile(SESSIONS_PATH, next);
+  ok(res, { deleted: id });
+}
+
+// Escape a string for embedding inside an AppleScript double-quoted literal.
+function osaEscape(s) {
+  return String(s).replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+}
+
+// Relaunch a saved session: open Terminal.app in its cwd and run
+// `claude --resume <id>` with the preset's --settings/--mcp-config re-applied.
+async function handleSessionResume(req, res) {
+  const body = await readJsonBody(req);
+  const id = String(body.id || '');
+  const sessions = await loadSavedSessions();
+  const entry = sessions.find((s) => s.id === id);
+  if (!entry) return fail(res, 404, 'Saved session not found');
+
+  const parts = [];
+  if (entry.cwd) parts.push('cd', shq(entry.cwd), '&&');
+  parts.push('claude');
+  if (entry.sessionId) parts.push('--resume', shq(entry.sessionId));
+  if (entry.presetId) {
+    const preset = await loadPreset(entry.presetId);
+    if (preset) {
+      const items = await loadMergedCatalog();
+      const cls = classify(preset, items);
+      const { settingsPath, mcpPath } = await writeSessionConfig(preset, cls);
+      parts.push('--settings', shq(settingsPath));
+      if (mcpPath) parts.push('--mcp-config', shq(mcpPath));
+      await recordApply(preset.id, 'session', settingsPath);
+    }
+  }
+  const command = parts.join(' ');
+
+  const launch = process.platform === 'darwin' && body.launch !== false;
+  if (launch) {
+    execFile('osascript', [
+      '-e', `tell application "Terminal" to do script "${osaEscape(command)}"`,
+      '-e', 'tell application "Terminal" to activate',
+    ], () => {});
+  }
+  ok(res, { command, launched: launch });
+}
+
 // ── Static files ──────────────────────────────────────────
 async function serveStatic(res, pathname) {
   let p;
@@ -1209,6 +1368,14 @@ async function handle(req, res) {
   if (method === 'POST' && pathname === '/api/config') return handleConfigPost(req, res);
   if (method === 'GET' && pathname === '/api/state') return handleStateGet(res);
   if (method === 'GET' && pathname === '/api/sessions') return handleSessions(res);
+  if (method === 'GET' && pathname === '/api/sessions/saved') return handleSavedSessionsGet(res);
+  if (method === 'POST' && pathname === '/api/sessions/saved') return handleSavedSessionSave(req, res);
+  if (pathname.startsWith('/api/sessions/saved/')) {
+    const id = decodeURIComponent(pathname.slice('/api/sessions/saved/'.length));
+    if (method === 'PUT') return handleSavedSessionUpdate(req, res, id);
+    if (method === 'DELETE') return handleSavedSessionDelete(res, id);
+  }
+  if (method === 'POST' && pathname === '/api/sessions/resume') return handleSessionResume(req, res);
 
   fail(res, 404, 'The requested API path was not found');
 }
@@ -1221,6 +1388,7 @@ async function ensureRuntimeFiles() {
     [CONFIG_PATH, DEFAULT_CONFIG],
     [STATE_PATH, DEFAULT_STATE],
     [CUSTOM_PATH, []],
+    [SESSIONS_PATH, []],
   ];
   for (const [p, def] of defaults) {
     if (!(await exists(p))) await writeJsonFile(p, def);

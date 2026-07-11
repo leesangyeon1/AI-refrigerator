@@ -57,6 +57,7 @@ const S = {
   catalog: [],
   itemMap: new Map(),
   presets: [],
+  saved: [],
   status: null,
   state: null,
   config: null,
@@ -126,6 +127,10 @@ async function reloadConfig() {
   try { S.config = await api('/api/config', { silent: true }); }
   catch { S.config = null; }
 }
+async function reloadSaved() {
+  try { const d = await api('/api/sessions/saved', { silent: true }); S.saved = Array.isArray(d) ? d : []; }
+  catch { S.saved = []; }
+}
 
 /* ===== Toast ===== */
 function toast(msg, type = 'success') {
@@ -160,6 +165,27 @@ function settleConfirm(v) {
   hideModal('confirmModal');
   const r = confirmResolve;
   confirmResolve = null;
+  if (r) r(v);
+}
+
+let promptResolve = null;
+function openPrompt({ title, label = 'Name', value = '', okText = 'Save' }) {
+  return new Promise(resolve => {
+    settlePrompt(null);
+    promptResolve = resolve;
+    $('#promptTitle').textContent = title;
+    $('#promptLabel').textContent = label;
+    $('#promptOk').textContent = okText;
+    const inp = $('#promptInput');
+    inp.value = value;
+    showModal('promptModal');
+    setTimeout(() => { inp.focus(); inp.select(); }, 0);
+  });
+}
+function settlePrompt(v) {
+  hideModal('promptModal');
+  const r = promptResolve;
+  promptResolve = null;
   if (r) r(v);
 }
 
@@ -317,7 +343,7 @@ function renderDashboard() {
   } else {
     qs.innerHTML = S.presets.map(p => {
       const missing = (p.items || []).filter(id => !S.itemMap.has(id)).length;
-      return `<div class="quick-card ${p.id === activeId ? 'active' : ''}">
+      return `<div class="quick-card ${p.id === activeId ? 'active' : ''}" draggable="true" data-drag-preset="${esc(p.id)}" title="Drag onto a session below to apply">
         <div class="quick-top">
           <span class="quick-emoji">${esc(p.emoji || '📦')}</span>
           <div class="quick-names">
@@ -370,6 +396,7 @@ function renderDashboard() {
   }).join('') : '<div class="empty-state">No apply history yet.</div>';
 
   renderSessions();
+  renderFridge();
 }
 
 async function renderSessions() {
@@ -396,7 +423,10 @@ async function renderSessions() {
   html += running.length ? running.map(s => {
     const b = s.breakdown || {};
     const active = (b.plugin || []).length + (b.mcp || []).length + (b.skill || []).length + (b.agent || []).length;
-    return `<div class="item-card" style="margin-bottom:8px">
+    const presetId = s.mode === 'preset' && s.settingsPath && s.settingsPath.endsWith('.settings.json')
+      ? s.settingsPath.split('/').pop().slice(0, -'.settings.json'.length) : '';
+    const defName = s.presetName || (s.cwd ? s.cwd.split('/').pop() : '') || 'session';
+    return `<div class="item-card sess-drop" style="margin-bottom:8px" data-cwd="${esc(s.cwd || '')}">
       <div class="item-top">
         <span class="item-name">🖥️ ${esc(s.presetName || s.label)} <span class="muted small">· pid ${esc(String(s.pid))}</span></span>
         <span class="pill pill-on">● Running</span>
@@ -407,6 +437,10 @@ async function renderSessions() {
         <div class="kv"><span class="k">Active</span><span>${(b.plugin || []).length} plugin(s) · ${(b.mcp || []).length} MCP · ${(b.skill || []).length} skill(s)</span></div>
         ${line('Plugins', b.plugin)}${line('MCP', b.mcp)}${line('Skills', b.skill)}${line('Agents', b.agent)}${line('CLAUDE.md', b.md)}`
       : `<div class="muted small">No plugins/skills/MCP detected active for this session.</div>`}
+      <div class="row-end" style="margin-top:8px;gap:6px">
+        <button class="btn btn-sm" data-action="apply-preset-session">🎯 Apply preset</button>
+        <button class="btn btn-sm btn-primary" data-action="fridge-save" data-cwd="${esc(s.cwd || '')}" data-preset="${esc(presetId)}" data-name="${esc(defName)}" data-sid="${esc(s.resume || '')}">🧊 Save to fridge</button>
+      </div>
     </div>`;
   }).join('') : '<div class="empty-state">No running <code>claude</code> CLI sessions detected right now.</div>';
 
@@ -423,10 +457,132 @@ async function renderSessions() {
         ${chips(b)}
         <div class="kv"><span class="k">Enables</span><span>${c.plugins.length} plugin(s) · ${c.mcpServers.length} MCP server(s)</span></div>
         <div class="code-row"><code>${esc(c.command)}</code><button class="btn btn-sm" data-action="copy-text" data-copy="${esc(c.command)}">Copy</button></div>
+        <div class="row-end" style="margin-top:6px">
+          <button class="btn btn-sm" data-action="fridge-save" data-preset="${esc(c.id)}" data-name="${esc(c.presetName)}">🧊 Save to fridge</button>
+        </div>
       </div>`;
     }).join('');
   }
   el.innerHTML = html;
+}
+
+/* ===== Session Fridge ===== */
+async function renderFridge() {
+  const el = $('#fridgeList');
+  if (!el) return;
+  await reloadSaved();
+  const cnt = $('#fridgeCount');
+  if (cnt) cnt.textContent = S.saved.length ? `(${S.saved.length})` : '';
+  if (!S.saved.length) {
+    el.innerHTML = '<div class="empty-state">Fridge is empty. Save a running session above, then resume it anytime with its preset. 🧊</div>';
+    return;
+  }
+  const chip = (label, arr, cls) => (arr && arr.length) ? `<span class="sum-chip"><span class="badge ${cls}">${label}</span> ${arr.length}</span>` : '';
+  el.innerHTML = S.saved.map(s => {
+    const b = s.breakdown || {};
+    const preset = s.presetId ? S.presets.find(p => p.id === s.presetId) : null;
+    const presetLabel = s.presetId ? (preset ? `${preset.emoji || '🍳'} ${preset.name}` : `${s.presetId} (deleted)`) : 'No preset';
+    return `<div class="item-card sess-drop" style="margin-bottom:8px" data-saved="${esc(s.id)}">
+      <div class="item-top">
+        <span class="item-name">🧊 ${esc(s.name)}</span>
+        <span class="muted small">${esc(fmtTime(s.savedAt))}</span>
+      </div>
+      <div class="kv"><span class="k">Folder</span><span class="muted small">${esc(s.cwd || '—')}</span></div>
+      <div class="kv"><span class="k">Resume</span><span class="muted small">${s.sessionId ? esc(s.sessionId.slice(0, 12)) + '…' : 'new session'}</span></div>
+      <div class="kv"><span class="k">Preset</span><span>${esc(presetLabel)}</span></div>
+      <div class="sum-chips">${chip('Plugin', b.plugin, 'type-plugin')}${chip('MCP', b.mcp, 'type-mcp')}${chip('Skill', b.skill, 'type-skill')}${chip('Agent', b.agent, 'type-agent')}${chip('CLAUDE.md', b.md, 'type-md')}</div>
+      <div class="row-end" style="margin-top:8px;gap:6px">
+        <button class="btn btn-sm btn-primary" data-action="fridge-resume" data-id="${esc(s.id)}">▶ Resume</button>
+        <button class="btn btn-sm" data-action="fridge-apply" data-id="${esc(s.id)}">🎯 Preset</button>
+        <button class="btn btn-sm" data-action="fridge-rename" data-id="${esc(s.id)}">✎ Rename</button>
+        <button class="btn btn-sm btn-red" data-action="fridge-delete" data-id="${esc(s.id)}">🗑</button>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+async function saveSessionToFridge(el) {
+  const cwd = el.dataset.cwd || '';
+  const presetId = el.dataset.preset || '';
+  const sid = el.dataset.sid || '';
+  const def = el.dataset.name || (cwd ? cwd.split('/').pop() : '') || 'session';
+  const name = await openPrompt({ title: '🧊 Save session to fridge', label: 'Session name', value: def });
+  if (name === null) return;
+  const trimmed = name.trim();
+  if (!trimmed) { toast('Name is required', 'error'); return; }
+  try {
+    await api('/api/sessions/saved', { method: 'POST', body: { name: trimmed, cwd: cwd || undefined, presetId: presetId || undefined, sessionId: sid || undefined } });
+    toast(`🧊 "${trimmed}" saved to the fridge`);
+    renderFridge();
+  } catch { /* toast handled */ }
+}
+
+async function resumeSaved(id, btn) {
+  try {
+    setBusy(btn, true, 'Launching…');
+    const d = await api('/api/sessions/resume', { method: 'POST', body: { id } });
+    if (d.launched) toast('▶ Resuming in a new Terminal window…');
+    else await copyText(d.command || '', 'Resume command copied — paste it in your terminal');
+    await reloadState();
+  } catch { /* toast handled */ }
+  finally { setBusy(btn, false); }
+}
+
+async function renameSaved(id) {
+  const s = S.saved.find(x => x.id === id);
+  if (!s) return;
+  const name = await openPrompt({ title: 'Rename session', label: 'Session name', value: s.name });
+  if (name === null) return;
+  const trimmed = name.trim();
+  if (!trimmed) { toast('Name cannot be empty', 'error'); return; }
+  try {
+    await api('/api/sessions/saved/' + encodeURIComponent(id), { method: 'PUT', body: { name: trimmed } });
+    toast('✎ Renamed');
+    renderFridge();
+  } catch { /* toast handled */ }
+}
+
+async function deleteSaved(id) {
+  const s = S.saved.find(x => x.id === id);
+  if (!s) return;
+  const ok = await openConfirm({
+    title: 'Remove from fridge',
+    bodyHtml: `<p>Remove <strong>${esc(s.name)}</strong> from the fridge?<br><span class="muted">The actual Claude session transcript is not deleted.</span></p>`,
+    okText: 'Remove', danger: true,
+  });
+  if (!ok) return;
+  try {
+    await api('/api/sessions/saved/' + encodeURIComponent(id), { method: 'DELETE' });
+    toast('🗑 Removed from fridge');
+    renderFridge();
+  } catch { /* toast handled */ }
+}
+
+// Attach a preset to a saved fridge session (from the picker or a drag).
+async function attachPresetToSaved(id, presetId) {
+  try {
+    await api('/api/sessions/saved/' + encodeURIComponent(id), { method: 'PUT', body: { presetId: presetId || null } });
+    const p = S.presets.find(x => x.id === presetId);
+    toast(`🎯 ${p ? p.name : 'Preset'} attached`);
+    renderFridge();
+  } catch { /* toast handled */ }
+}
+
+async function pickPresetForSaved(anchor, id) {
+  if (!S.presets.length) { toast('No presets yet — build one first', 'error'); return; }
+  const v = await openPicker({
+    title: 'Attach preset',
+    anchor,
+    options: [{ label: '— None —', value: '' }, ...S.presets.map(p => ({ label: `${p.emoji || '🍳'} ${p.name}`, value: p.id }))],
+  });
+  if (v === null) return;
+  attachPresetToSaved(id, v);
+}
+
+async function pickPresetForRunning(anchor) {
+  if (!S.presets.length) { toast('No presets yet — build one first', 'error'); return; }
+  const v = await openPicker({ title: 'Apply preset to session', anchor, options: S.presets.map(p => ({ label: `${p.emoji || '🍳'} ${p.name}`, value: p.id })) });
+  if (v) applyPresetToSession(v);
 }
 
 async function quickSession(presetId, btn) {
@@ -886,9 +1042,18 @@ async function importPresetFile(file) {
 
 /* --- Drag & drop --- */
 let dragCtx = null;
+let dragPreset = null;
 
 function initDnd() {
   document.addEventListener('dragstart', e => {
+    const pcard = e.target.closest ? e.target.closest('[data-drag-preset]') : null;
+    if (pcard) {
+      dragPreset = pcard.dataset.dragPreset;
+      pcard.classList.add('dragging');
+      try { e.dataTransfer.setData('text/plain', dragPreset); } catch { /* ignore */ }
+      e.dataTransfer.effectAllowed = 'copy';
+      return;
+    }
     const card = e.target.closest ? e.target.closest('.dnd-item') : null;
     if (!card) return;
     dragCtx = { id: card.dataset.id, source: card.dataset.source };
@@ -897,11 +1062,17 @@ function initDnd() {
     e.dataTransfer.effectAllowed = 'copyMove';
   });
   document.addEventListener('dragend', () => {
-    $$('.dnd-item.dragging').forEach(x => x.classList.remove('dragging'));
-    $$('.drop-zone.over').forEach(z => z.classList.remove('over'));
+    $$('.dnd-item.dragging, [data-drag-preset].dragging').forEach(x => x.classList.remove('dragging'));
+    $$('.drop-zone.over, .sess-drop.over').forEach(z => z.classList.remove('over'));
     dragCtx = null;
+    dragPreset = null;
   });
   document.addEventListener('dragover', e => {
+    if (dragPreset) {
+      const sz = e.target.closest ? e.target.closest('.sess-drop') : null;
+      if (sz) { e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; sz.classList.add('over'); }
+      return;
+    }
     const z = e.target.closest ? e.target.closest('.drop-zone') : null;
     if (z && dragCtx) {
       e.preventDefault();
@@ -910,10 +1081,21 @@ function initDnd() {
     }
   });
   document.addEventListener('dragleave', e => {
-    const z = e.target.closest ? e.target.closest('.drop-zone') : null;
+    const z = e.target.closest ? e.target.closest('.drop-zone, .sess-drop') : null;
     if (z && !z.contains(e.relatedTarget)) z.classList.remove('over');
   });
   document.addEventListener('drop', e => {
+    if (dragPreset) {
+      const sz = e.target.closest ? e.target.closest('.sess-drop') : null;
+      if (sz) {
+        e.preventDefault();
+        sz.classList.remove('over');
+        if (sz.dataset.saved) attachPresetToSaved(sz.dataset.saved, dragPreset);
+        else applyPresetToSession(dragPreset);
+      }
+      dragPreset = null;
+      return;
+    }
     const z = e.target.closest ? e.target.closest('.drop-zone') : null;
     if (!z || !dragCtx) return;
     e.preventDefault();
@@ -1582,6 +1764,12 @@ function initEvents() {
           })();
           break;
         case 'refresh-sessions': renderSessions(); break;
+        case 'fridge-save': saveSessionToFridge(el); break;
+        case 'fridge-resume': resumeSaved(el.dataset.id, el); break;
+        case 'fridge-apply': pickPresetForSaved(el, el.dataset.id); break;
+        case 'fridge-rename': renameSaved(el.dataset.id); break;
+        case 'fridge-delete': deleteSaved(el.dataset.id); break;
+        case 'apply-preset-session': pickPresetForRunning(el); break;
         case 'quick-session': quickSession(el.dataset.preset, el); break;
         case 'quick-global': globalApplyFlow(el.dataset.preset, el); break;
         case 'open-custom-modal': showModal('customModal'); $('#cmName').focus(); break;
@@ -1650,17 +1838,22 @@ function initEvents() {
     if (e.key !== 'Escape') return;
     settlePicker(null);
     if ($('#confirmModal').classList.contains('show')) settleConfirm(false);
-    $$('.modal-overlay.show').forEach(m => { if (m.id !== 'confirmModal') m.classList.remove('show'); });
+    if ($('#promptModal').classList.contains('show')) settlePrompt(null);
+    $$('.modal-overlay.show').forEach(m => { if (m.id !== 'confirmModal' && m.id !== 'promptModal') m.classList.remove('show'); });
   });
 
   // Close modal on overlay click
   $$('.modal-overlay').forEach(m => m.addEventListener('click', e => {
     if (e.target !== m) return;
     if (m.id === 'confirmModal') settleConfirm(false);
+    else if (m.id === 'promptModal') settlePrompt(null);
     else m.classList.remove('show');
   }));
   $('#confirmOk').addEventListener('click', () => settleConfirm(true));
   $('#confirmCancel').addEventListener('click', () => settleConfirm(false));
+  $('#promptOk').addEventListener('click', () => settlePrompt($('#promptInput').value));
+  $('#promptCancel').addEventListener('click', () => settlePrompt(null));
+  $('#promptInput').addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); settlePrompt($('#promptInput').value); } });
 
   // Search/input
   $('#pantrySearch').addEventListener('input', e => { S.ui.pantry.q = e.target.value; renderPantryList(); });
