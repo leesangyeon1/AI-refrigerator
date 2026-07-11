@@ -497,3 +497,8 @@ textarea.input{resize:vertical;min-height:70px}
   .modal{padding:16px}
   .mini-item{padding:11px 12px}
 }
+
+/* Session Fridge — drag a preset onto a session/saved card */
+.quick-card[draggable="true"]{cursor:grab}
+.quick-card.dragging{opacity:.5}
+.sess-drop.over{outline:2px dashed var(--green);outline-offset:2px;background:var(--drop)}

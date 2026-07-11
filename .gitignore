@@ -2,6 +2,8 @@
 node_modules/
 data/config.json
 data/state.json
+data/sessions.json
+data/session-labels.json
 data/custom-items.json
 *.bak-*
 site/.vercel/
