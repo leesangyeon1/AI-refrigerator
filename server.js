@@ -31,6 +31,7 @@ const STATE_PATH = path.join(USER_DATA_DIR, 'state.json');
 const SESSIONS_PATH = path.join(USER_DATA_DIR, 'sessions.json');
 const PENDING_PATH = path.join(USER_DATA_DIR, 'pending-sessions.json');
 const AUTH_PATH = path.join(USER_DATA_DIR, 'auth.json'); // cloud session tokens (on-device only)
+const ENDED_INBOX_PATH = path.join(USER_DATA_DIR, 'ended-inbox.jsonl'); // SessionEnd hook drops records here
 // Claude Code's own per-session store: ~/.claude/sessions/<pid>.json holds the
 // { pid, sessionId, cwd, name, … } that `/rename` writes to. We read/write the
 // same file so a name set here shows up in Claude Code and vice-versa.
@@ -1035,6 +1036,7 @@ async function inspectClaude(cwd, settingsFlag, mcpFlag) {
 }
 
 async function handleSessions(res) {
+  await drainEndedInbox();
   const items = await loadMergedCatalog();
   const byId = new Map(items.map((i) => [i.id, i]));
 
@@ -1296,6 +1298,48 @@ async function loadPending() {
   const raw = await readJsonOrNull(PENDING_PATH);
   return Array.isArray(raw) ? raw : [];
 }
+// Absorb ended-session records the SessionEnd hook wrote to the inbox (possibly
+// while the app was closed). Rename-then-process so a hook appending concurrently
+// isn't lost. Applies the current mode: off → discard, always → save, ask → queue.
+async function drainEndedInbox() {
+  const tmp = ENDED_INBOX_PATH + '.processing';
+  try {
+    await fsp.rename(ENDED_INBOX_PATH, tmp);
+  } catch {
+    return; // nothing to drain
+  }
+  let text = '';
+  try { text = await fsp.readFile(tmp, 'utf8'); } catch {}
+  try { await fsp.unlink(tmp); } catch {}
+  const cfg = await loadConfig();
+  const mode = AUTOSAVE_MODES.includes(cfg.autoSaveMode) ? cfg.autoSaveMode : 'off';
+  if (mode === 'off') return; // off → sessions are not auto-saved; drop the records
+  const pending = await loadPending();
+  const pendingSids = new Set(pending.map((p) => p.sessionId).filter(Boolean));
+  let changedPending = false;
+  const saved = await loadSavedSessions();
+  const savedSids = new Set(saved.map((s) => s.sessionId).filter(Boolean));
+  for (const line of text.split('\n')) {
+    const t = line.trim();
+    if (!t) continue;
+    let ev;
+    try { ev = JSON.parse(t); } catch { continue; }
+    const sid = ev.sessionId ? String(ev.sessionId) : null;
+    const cwd = ev.cwd ? path.resolve(String(ev.cwd)) : null;
+    const name = cwd ? path.basename(cwd) : 'session';
+    if (sid && savedSids.has(sid)) continue; // already in the fridge
+    if (mode === 'always') {
+      const entry = await addSavedEntry(await composeSavedEntry(name, cwd, sid, null));
+      if (entry && entry.sessionId) savedSids.add(entry.sessionId);
+    } else {
+      if (sid && pendingSids.has(sid)) continue;
+      pending.unshift({ sessionId: sid, cwd, name, endedAt: ev.endedAt || new Date().toISOString() });
+      if (sid) pendingSids.add(sid);
+      changedPending = true;
+    }
+  }
+  if (changedPending) await writeJsonFile(PENDING_PATH, pending);
+}
 // Called by the Claude Code SessionEnd hook when a session exits.
 async function handleSessionEnded(req, res) {
   const body = await readJsonBody(req);
@@ -1324,6 +1368,7 @@ async function handleSessionEnded(req, res) {
   return ok(res, { mode, action: 'queued' });
 }
 async function handlePendingGet(res) {
+  await drainEndedInbox();
   ok(res, await loadPending());
 }
 // Save selected (or all) pending ended-sessions into the fridge.
@@ -1454,7 +1499,7 @@ async function handleInstallHook(req, res) {
   if (enable) {
     await fsp.mkdir(hookDir, { recursive: true });
     await fsp.copyFile(path.join(__dirname, 'hooks', 'session-end-autosave.js'), hookScript);
-    filtered.push({ hooks: [{ type: 'command', command: `AI_REFRIGERATOR_PORT=${PORT} node ${shq(hookScript)}` }] });
+    filtered.push({ hooks: [{ type: 'command', command: `node ${shq(hookScript)}` }] });
   }
   settings.hooks.SessionEnd = filtered;
   await fsp.mkdir(path.dirname(settingsPath), { recursive: true });
@@ -1849,6 +1894,7 @@ async function ensureRuntimeFiles() {
 }
 
 await ensureRuntimeFiles();
+await drainEndedInbox().catch(() => {});
 
 const server = http.createServer((req, res) => {
   handle(req, res).catch((e) => {
