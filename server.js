@@ -30,6 +30,7 @@ const CONFIG_PATH = path.join(USER_DATA_DIR, 'config.json');
 const STATE_PATH = path.join(USER_DATA_DIR, 'state.json');
 const SESSIONS_PATH = path.join(USER_DATA_DIR, 'sessions.json');
 const PENDING_PATH = path.join(USER_DATA_DIR, 'pending-sessions.json');
+const AUTH_PATH = path.join(USER_DATA_DIR, 'auth.json'); // cloud session tokens (on-device only)
 // Claude Code's own per-session store: ~/.claude/sessions/<pid>.json holds the
 // { pid, sessionId, cwd, name, … } that `/rename` writes to. We read/write the
 // same file so a name set here shows up in Claude Code and vice-versa.
@@ -39,7 +40,7 @@ const SESSION_DIR = path.join(USER_DIR, 'session-presets');
 const MAX_BODY = 2 * 1024 * 1024;
 const ID_RE = /^[a-z0-9-]{1,64}$/;
 const ITEM_TYPES = ['skill', 'plugin', 'mcp', 'agent', 'md', 'tool', 'cli'];
-const DEFAULT_CONFIG = { githubToken: '', aiCommand: 'claude', aiArgs: ['-p'], defaultProjectPath: '', autoSaveMode: 'off' };
+const DEFAULT_CONFIG = { githubToken: '', aiCommand: 'claude', aiArgs: ['-p'], defaultProjectPath: '', autoSaveMode: 'off', supabaseUrl: '', supabaseAnonKey: '' };
 const AUTOSAVE_MODES = ['off', 'ask', 'always'];
 const DEFAULT_STATE = { lastApplied: null, history: [] };
 const MIME = {
@@ -140,6 +141,8 @@ function maskConfig(cfg) {
     aiArgs: cfg.aiArgs,
     defaultProjectPath: cfg.defaultProjectPath,
     autoSaveMode: cfg.autoSaveMode || 'off',
+    supabaseUrl: cfg.supabaseUrl || '',
+    supabaseConfigured: Boolean(cfg.supabaseUrl && cfg.supabaseAnonKey),
   };
 }
 
@@ -941,6 +944,8 @@ async function handleConfigPost(req, res) {
   if (Array.isArray(body.aiArgs)) cfg.aiArgs = body.aiArgs.map(String);
   if (typeof body.defaultProjectPath === 'string') cfg.defaultProjectPath = body.defaultProjectPath.trim();
   if (typeof body.autoSaveMode === 'string' && AUTOSAVE_MODES.includes(body.autoSaveMode)) cfg.autoSaveMode = body.autoSaveMode;
+  if (typeof body.supabaseUrl === 'string') cfg.supabaseUrl = body.supabaseUrl.trim().replace(/\/+$/, '');
+  if (typeof body.supabaseAnonKey === 'string' && !body.supabaseAnonKey.startsWith('****')) cfg.supabaseAnonKey = body.supabaseAnonKey.trim();
   await writeJsonFile(CONFIG_PATH, cfg);
   ok(res, maskConfig(cfg));
 }
@@ -1536,6 +1541,126 @@ async function handleStoreImport(req, res) {
   ok(res, { presetsAdded, itemsAdded, sessionsAdded });
 }
 
+// ── Cloud sync (Supabase: email/password auth + per-user fridge) ──
+async function loadAuth() { return (await readJsonOrNull(AUTH_PATH)) || null; }
+async function saveAuth(a) { await writeJsonFile(AUTH_PATH, a); }
+async function clearAuth() { try { await fsp.unlink(AUTH_PATH); } catch {} }
+
+// Low-level call to the user's Supabase project (GoTrue auth or PostgREST data).
+async function supaFetch(cfg, apiPath, { method = 'GET', body, token, prefer } = {}) {
+  const headers = { apikey: cfg.supabaseAnonKey };
+  if (token) headers.Authorization = `Bearer ${token}`;
+  if (body !== undefined) headers['Content-Type'] = 'application/json';
+  if (prefer) headers.Prefer = prefer;
+  const res = await fetchWithTimeout(cfg.supabaseUrl + apiPath, {
+    method, headers, body: body !== undefined ? JSON.stringify(body) : undefined,
+  }, 12000);
+  const text = await res.text();
+  let data = null;
+  try { data = text ? JSON.parse(text) : null; } catch { data = text; }
+  return { ok: res.ok, status: res.status, data };
+}
+
+// Return a valid auth session, refreshing the access token if it has expired.
+async function validToken(cfg) {
+  let auth = await loadAuth();
+  if (!auth || !auth.access_token) return null;
+  if (auth.expires_at && auth.expires_at * 1000 > Date.now() + 30000) return auth;
+  if (!auth.refresh_token) return auth;
+  const r = await supaFetch(cfg, '/auth/v1/token?grant_type=refresh_token', { method: 'POST', body: { refresh_token: auth.refresh_token } });
+  if (r.ok && r.data && r.data.access_token) {
+    auth = { ...auth, access_token: r.data.access_token, refresh_token: r.data.refresh_token, expires_at: r.data.expires_at };
+    await saveAuth(auth);
+  }
+  return auth;
+}
+
+async function requireCloud(res) {
+  const cfg = await loadConfig();
+  if (!cfg.supabaseUrl || !cfg.supabaseAnonKey) { fail(res, 400, 'Supabase is not configured (set URL + anon key in Settings)'); return null; }
+  return cfg;
+}
+
+async function handleCloudStatus(res) {
+  const cfg = await loadConfig();
+  const auth = await loadAuth();
+  ok(res, {
+    configured: Boolean(cfg.supabaseUrl && cfg.supabaseAnonKey),
+    supabaseUrl: cfg.supabaseUrl || '',
+    signedIn: Boolean(auth && auth.access_token),
+    email: (auth && auth.email) || null,
+  });
+}
+
+async function handleCloudSignup(req, res) {
+  const cfg = await requireCloud(res); if (!cfg) return;
+  const body = await readJsonBody(req);
+  const r = await supaFetch(cfg, '/auth/v1/signup', { method: 'POST', body: { email: String(body.email || ''), password: String(body.password || '') } });
+  if (!r.ok) return fail(res, r.status || 400, (r.data && (r.data.msg || r.data.error_description || r.data.error)) || 'Sign-up failed');
+  if (r.data && r.data.access_token) {
+    await saveAuth({ access_token: r.data.access_token, refresh_token: r.data.refresh_token, expires_at: r.data.expires_at, email: (r.data.user && r.data.user.email) || body.email, user_id: r.data.user && r.data.user.id });
+  }
+  ok(res, { signedIn: Boolean(r.data && r.data.access_token), needsConfirmation: !(r.data && r.data.access_token) });
+}
+
+async function handleCloudLogin(req, res) {
+  const cfg = await requireCloud(res); if (!cfg) return;
+  const body = await readJsonBody(req);
+  const r = await supaFetch(cfg, '/auth/v1/token?grant_type=password', { method: 'POST', body: { email: String(body.email || ''), password: String(body.password || '') } });
+  if (!r.ok || !r.data || !r.data.access_token) return fail(res, r.status || 401, (r.data && (r.data.error_description || r.data.msg || r.data.error)) || 'Login failed');
+  await saveAuth({ access_token: r.data.access_token, refresh_token: r.data.refresh_token, expires_at: r.data.expires_at, email: (r.data.user && r.data.user.email) || body.email, user_id: r.data.user && r.data.user.id });
+  ok(res, { signedIn: true, email: (r.data.user && r.data.user.email) || body.email });
+}
+
+async function handleCloudLogout(res) {
+  await clearAuth();
+  ok(res, { signedIn: false });
+}
+
+// Push every local preset / custom item / saved session up to the cloud (upsert).
+async function handleCloudPush(res) {
+  const cfg = await requireCloud(res); if (!cfg) return;
+  const auth = await validToken(cfg);
+  if (!auth || !auth.access_token) return fail(res, 401, 'Not signed in');
+  const rows = [];
+  for (const p of await loadAllPresets()) rows.push({ kind: 'preset', item_id: p.id, data: p });
+  const custom = (await readJsonOrNull(CUSTOM_PATH)) || [];
+  for (const it of Array.isArray(custom) ? custom : []) if (it && it.id) rows.push({ kind: 'custom_item', item_id: String(it.id), data: it });
+  for (const s of await loadSavedSessions()) rows.push({ kind: 'saved_session', item_id: s.id, data: s });
+  if (!rows.length) return ok(res, { pushed: 0 });
+  const r = await supaFetch(cfg, '/rest/v1/fridge_data?on_conflict=user_id,kind,item_id', {
+    method: 'POST', token: auth.access_token, body: rows, prefer: 'resolution=merge-duplicates,return=minimal',
+  });
+  if (!r.ok) return fail(res, r.status || 500, (r.data && (r.data.message || r.data.hint)) || 'Push failed — has the migration been applied?');
+  ok(res, { pushed: rows.length });
+}
+
+// Pull the cloud fridge down and merge into local storage.
+async function handleCloudPull(res) {
+  const cfg = await requireCloud(res); if (!cfg) return;
+  const auth = await validToken(cfg);
+  if (!auth || !auth.access_token) return fail(res, 401, 'Not signed in');
+  const r = await supaFetch(cfg, '/rest/v1/fridge_data?select=kind,item_id,data', { token: auth.access_token });
+  if (!r.ok || !Array.isArray(r.data)) return fail(res, r.status || 500, (r.data && (r.data.message || r.data.hint)) || 'Pull failed — has the migration been applied?');
+  let presets = 0, items = 0, sessions = 0;
+  const custom = (await readJsonOrNull(CUSTOM_PATH)) || [];
+  const customById = new Map((Array.isArray(custom) ? custom : []).map((i) => [i.id, i]));
+  const saved = await loadSavedSessions();
+  const savedIds = new Set(saved.map((s) => s.id));
+  for (const row of r.data) {
+    if (row.kind === 'preset' && row.data && ID_RE.test(String(row.data.id || ''))) {
+      await writeJsonFile(path.join(PRESETS_DIR, row.data.id + '.json'), row.data); presets++;
+    } else if (row.kind === 'custom_item' && row.data && row.data.id) {
+      customById.set(row.data.id, row.data); items++;
+    } else if (row.kind === 'saved_session' && row.data && row.data.id && !savedIds.has(row.data.id)) {
+      saved.push(row.data); savedIds.add(row.data.id); sessions++;
+    }
+  }
+  await writeJsonFile(CUSTOM_PATH, [...customById.values()]);
+  await writeJsonFile(SESSIONS_PATH, saved);
+  ok(res, { presets, items, sessions });
+}
+
 // ── Static files ──────────────────────────────────────────
 async function serveStatic(res, pathname) {
   let p;
@@ -1652,6 +1777,12 @@ async function handle(req, res) {
   if (method === 'POST' && pathname === '/api/sessions/pending/save') return handlePendingSave(req, res);
   if (method === 'POST' && pathname === '/api/sessions/pending/dismiss') return handlePendingDismiss(req, res);
   if (method === 'POST' && pathname === '/api/autosave/install-hook') return handleInstallHook(req, res);
+  if (method === 'GET' && pathname === '/api/cloud/status') return handleCloudStatus(res);
+  if (method === 'POST' && pathname === '/api/cloud/signup') return handleCloudSignup(req, res);
+  if (method === 'POST' && pathname === '/api/cloud/login') return handleCloudLogin(req, res);
+  if (method === 'POST' && pathname === '/api/cloud/logout') return handleCloudLogout(res);
+  if (method === 'POST' && pathname === '/api/cloud/push') return handleCloudPush(res);
+  if (method === 'POST' && pathname === '/api/cloud/pull') return handleCloudPull(res);
   if (method === 'POST' && pathname === '/api/open-app') return handleOpenApp(res);
   if (method === 'GET' && pathname === '/api/store') return handleStoreInfo(res);
   if (method === 'GET' && pathname === '/api/store/export') return handleStoreExport(res);
