@@ -1810,6 +1810,33 @@ function renderSettings() {
   $('#cfgAiCmd').value = (c && c.aiCommand) || 'claude';
   $('#cfgAiArgs').value = c && Array.isArray(c.aiArgs) ? c.aiArgs.join(' ') : '-p';
   $('#cfgProjPath').value = (c && c.defaultProjectPath) || '';
+  loadStoreInfo();
+}
+
+async function loadStoreInfo() {
+  const el = $('#storeInfo');
+  if (!el) return;
+  try {
+    const s = await api('/api/store', { silent: true });
+    const c = s.counts || {};
+    el.innerHTML = `📍 <code>${esc(s.dir || '~/.ai-refrigerator')}</code> · store v${esc(s.storeVersion)} · `
+      + `${c.presets || 0} presets · ${c.customItems || 0} custom items · ${c.sessions || 0} saved sessions`;
+  } catch {
+    el.textContent = 'Could not read store info.';
+  }
+}
+
+async function restoreFromBackup(file) {
+  let bundle;
+  try { bundle = JSON.parse(await file.text()); }
+  catch (e) { toast('JSON parse failed: ' + e.message, 'error'); return; }
+  if (!bundle || bundle._bundle !== 'ai-refrigerator') { toast('Not an AI Refrigerator backup file', 'error'); return; }
+  try {
+    const r = await api('/api/store/import', { method: 'POST', body: bundle });
+    toast(`📥 Restored — ${r.presetsAdded} presets, ${r.itemsAdded} items, ${r.sessionsAdded} sessions`);
+    await Promise.all([reloadPresets(), reloadCatalog()]);
+    renderView(S.ui.view);
+  } catch { /* toast handled */ }
 }
 
 async function saveConfig(btn) {
@@ -1871,6 +1898,7 @@ function initEvents() {
         case 'open-custom-modal': pendingCustomId = null; showModal('customModal'); $('#cmName').focus(); break;
         case 'restore-missing': restoreMissing(el.dataset.id); break;
         case 'open-app': openAsApp(el); break;
+        case 'store-restore': $('#restoreFile').click(); break;
         case 'custom-submit': submitCustom(); break;
         case 'modal-close': hideModal(el.dataset.modal); break;
         case 'toggle-cat': {
@@ -1998,6 +2026,12 @@ function initEvents() {
     const f = e.target.files && e.target.files[0];
     e.target.value = '';
     if (f) importPresetFile(f);
+  });
+  // Restore from backup
+  $('#restoreFile').addEventListener('change', e => {
+    const f = e.target.files && e.target.files[0];
+    e.target.value = '';
+    if (f) restoreFromBackup(f);
   });
 
   window.addEventListener('hashchange', route);

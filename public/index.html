@@ -197,6 +197,16 @@
         <div class="row-end"><button class="btn btn-primary" data-action="open-app">🖥️ Open as desktop app</button></div>
       </div>
       <div class="panel">
+        <div class="panel-head"><h2>💾 Backup &amp; Restore</h2></div>
+        <div id="storeInfo" class="muted small">Loading store…</div>
+        <p class="muted small">Your data lives on-device and survives deleting the app. Export a backup to move it to another machine or restore it after a full wipe.</p>
+        <div class="row-end" style="gap:8px">
+          <button class="btn" data-action="store-restore">📥 Restore from backup</button>
+          <a class="btn btn-primary" href="/api/store/export" download>⬇ Export backup</a>
+          <input type="file" id="restoreFile" accept=".json,application/json" hidden>
+        </div>
+      </div>
+      <div class="panel">
         <div class="panel-head"><h2>📁 Data Location</h2></div>
         <ul class="data-loc">
           <li><strong>On-device — yours, never pushed to GitHub:</strong> <code>~/.ai-refrigerator/</code> holds your <code>presets/</code>, <code>data/</code> (custom ingredients · saved sessions · settings · history), and <code>session-presets/</code>. Updating the app via git never touches these.</li>

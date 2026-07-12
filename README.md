@@ -64,6 +64,8 @@ Every user gets their own **private, on-device refrigerator**. All user data is 
 
 What ships **in the repo** is only the read-only defaults used to **seed a fresh install**: the sample presets in `presets/` and the built-in catalog `data/catalog.json`. On first run they're copied into `~/.ai-refrigerator/`; after that, updating the app never changes your on-device data.
 
+**Delete-proof.** Because your data lives outside the project folder, you can delete the whole repo, re-clone it later, and your presets/sessions/custom items are still there — the app detects the existing store (via `~/.ai-refrigerator/store.json`) and reuses it instead of reseeding. For extra safety, **Settings → Backup & Restore** exports your entire store as one file and restores it (e.g. onto another machine).
+
 ## 🔗 Sharing Preset JSON
 
 1. **Export**: Use `Export JSON` from the column menu in the Preset Builder, or download the `preset.json` format from the `Apply & Export` tab.
