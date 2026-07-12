@@ -1855,7 +1855,98 @@ function renderSettings() {
   $('#cfgAiCmd').value = (c && c.aiCommand) || 'claude';
   $('#cfgAiArgs').value = c && Array.isArray(c.aiArgs) ? c.aiArgs.join(' ') : '-p';
   $('#cfgProjPath').value = (c && c.defaultProjectPath) || '';
+  const mode = (c && c.autoSaveMode) || 'off';
+  $('#cfgAutoSave').value = mode;
+  $('#autoSaveHookState').textContent = mode === 'off'
+    ? 'Off — sessions are saved only when you click Save to fridge.'
+    : (mode === 'always' ? 'On: ended sessions are saved automatically.' : 'On: you\'ll be asked to save ended sessions when you open the app.');
   loadStoreInfo();
+  loadCloud();
+}
+
+/* ===== Cloud Sync (Supabase) ===== */
+async function loadCloud() {
+  const st = $('#cloudStatus'); if (!st) return;
+  const show = (id, on) => { const e = $('#' + id); if (e) e.style.display = on ? '' : 'none'; };
+  let s;
+  try { s = await api('/api/cloud/status', { silent: true }); } catch { st.textContent = 'Cloud status unavailable.'; return; }
+  if (!s.configured) {
+    st.textContent = 'Not connected. Enter your Supabase project URL + anon key to enable login & sync.';
+    show('cloudConfig', true); show('cloudAuth', false); show('cloudSignedIn', false);
+    $('#cfgSupaUrl').value = s.supabaseUrl || '';
+  } else if (!s.signedIn) {
+    st.innerHTML = `Connected to <code>${esc(s.supabaseUrl)}</code>. Sign in to sync.`;
+    show('cloudConfig', false); show('cloudAuth', true); show('cloudSignedIn', false);
+  } else {
+    st.innerHTML = `Signed in as <strong>${esc(s.email || '')}</strong> · <code>${esc(s.supabaseUrl)}</code>`;
+    show('cloudConfig', false); show('cloudAuth', false); show('cloudSignedIn', true);
+  }
+}
+async function cloudSaveConfig() {
+  const supabaseUrl = $('#cfgSupaUrl').value.trim();
+  const supabaseAnonKey = $('#cfgSupaKey').value.trim();
+  if (!supabaseUrl || !supabaseAnonKey) { toast('Enter both URL and anon key', 'error'); return; }
+  try { await api('/api/config', { method: 'POST', body: { supabaseUrl, supabaseAnonKey } }); toast('☁️ Connection saved'); $('#cfgSupaKey').value = ''; loadCloud(); } catch { /* toast handled */ }
+}
+async function cloudAuthAction(kind) {
+  const email = $('#cloudEmail').value.trim();
+  const password = $('#cloudPass').value;
+  if (!email || !password) { toast('Enter email and password', 'error'); return; }
+  try {
+    const d = await api('/api/cloud/' + kind, { method: 'POST', body: { email, password } });
+    $('#cloudPass').value = '';
+    if (kind === 'signup' && d.needsConfirmation) toast('Account created — check your email to confirm, then sign in', 'info');
+    else toast(kind === 'signup' ? '✅ Account created & signed in' : 'Signed in ☁️');
+    loadCloud();
+  } catch { /* toast handled */ }
+}
+async function cloudLogout() {
+  try { await api('/api/cloud/logout', { method: 'POST', body: {} }); toast('Signed out'); loadCloud(); } catch { /* toast handled */ }
+}
+async function cloudPush(btn) {
+  try { setBusy(btn, true, 'Pushing…'); const r = await api('/api/cloud/push', { method: 'POST', body: {} }); toast(`⬆ Pushed ${r.pushed} item(s) to the cloud`); }
+  catch { /* toast handled */ } finally { setBusy(btn, false); }
+}
+async function cloudPull(btn) {
+  try {
+    setBusy(btn, true, 'Pulling…');
+    const r = await api('/api/cloud/pull', { method: 'POST', body: {} });
+    toast(`⬇ Pulled ${r.presets} preset(s), ${r.items} item(s), ${r.sessions} session(s)`);
+    await Promise.all([reloadPresets(), reloadCatalog()]);
+    renderView(S.ui.view);
+  } catch { /* toast handled */ } finally { setBusy(btn, false); }
+}
+
+// Change the auto-save mode: persist it and install/remove the Claude Code hook.
+async function setAutoSaveMode(mode) {
+  try {
+    S.config = await api('/api/config', { method: 'POST', body: { autoSaveMode: mode } });
+    await api('/api/autosave/install-hook', { method: 'POST', body: { enable: mode !== 'off' } });
+    toast(mode === 'off' ? 'Auto-save turned off' : `Auto-save: ${mode} — SessionEnd hook installed`);
+    renderSettings();
+  } catch { renderSettings(); }
+}
+
+// On app open (Ask mode): offer to save sessions that ended while the app was closed.
+async function checkPendingSessions() {
+  let pending = [];
+  try { pending = await api('/api/sessions/pending', { silent: true }); } catch { return; }
+  if (!Array.isArray(pending) || !pending.length) return;
+  const names = pending.map(p => `<li>${esc(p.name)}${p.cwd ? ` <span class="muted small">${esc(p.cwd)}</span>` : ''}</li>`).join('');
+  const ok = await openConfirm({
+    title: `🧊 ${pending.length} ended session(s)`,
+    bodyHtml: `<p>These Claude Code sessions ended since you last opened the app. Save them to the fridge?</p><ul class="plan-list">${names}</ul>`,
+    okText: 'Save all',
+  });
+  try {
+    if (ok) {
+      const r = await api('/api/sessions/pending/save', { method: 'POST', body: {} });
+      toast(`🧊 Saved ${r.saved} session(s) to the fridge`);
+      if (S.ui.view === 'dashboard' || S.ui.view === 'saved') renderView(S.ui.view);
+    } else {
+      await api('/api/sessions/pending/dismiss', { method: 'POST', body: {} });
+    }
+  } catch { /* toast handled */ }
 }
 
 async function loadStoreInfo() {
@@ -1944,6 +2035,12 @@ function initEvents() {
         case 'restore-missing': restoreMissing(el.dataset.id); break;
         case 'open-app': openAsApp(el); break;
         case 'store-restore': $('#restoreFile').click(); break;
+        case 'cloud-save-config': cloudSaveConfig(); break;
+        case 'cloud-signup': cloudAuthAction('signup'); break;
+        case 'cloud-login': cloudAuthAction('login'); break;
+        case 'cloud-logout': cloudLogout(); break;
+        case 'cloud-push': cloudPush(el); break;
+        case 'cloud-pull': cloudPull(el); break;
         case 'custom-submit': submitCustom(); break;
         case 'modal-close': hideModal(el.dataset.modal); break;
         case 'toggle-cat': {
@@ -2078,6 +2175,7 @@ function initEvents() {
     e.target.value = '';
     if (f) restoreFromBackup(f);
   });
+  $('#cfgAutoSave').addEventListener('change', e => setAutoSaveMode(e.target.value));
 
   window.addEventListener('hashchange', route);
   initDnd();
@@ -2110,6 +2208,7 @@ async function init() {
 
   if (!location.hash) history.replaceState(null, '', '#dashboard');
   route();
+  if (S.config && S.config.autoSaveMode === 'ask') checkPendingSessions();
 }
 
 init();

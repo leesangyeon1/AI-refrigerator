@@ -195,6 +195,17 @@
         <div class="row-end"><button class="btn btn-primary" data-action="save-config">Save</button></div>
       </div>
       <div class="panel">
+        <div class="panel-head"><h2>💾 Auto-save sessions</h2></div>
+        <p class="muted small">When a Claude Code session ends, automatically put it in the fridge. Enabling this installs a Claude Code <code>SessionEnd</code> hook.</p>
+        <label class="field-label" for="cfgAutoSave">On session end</label>
+        <select class="input" id="cfgAutoSave">
+          <option value="off">Off — save manually only</option>
+          <option value="ask">Ask — prompt me next time I open the app</option>
+          <option value="always">Always — save automatically</option>
+        </select>
+        <div class="muted small" id="autoSaveHookState" style="margin-top:6px"></div>
+      </div>
+      <div class="panel">
         <div class="panel-head"><h2>🖥️ Run modes</h2></div>
         <p class="muted small">Two ways to use AI Refrigerator:</p>
         <ul class="data-loc">
@@ -202,6 +213,35 @@
           <li><strong>2 · Desktop app</strong> — a standalone app window (no tabs/address bar). Double-click <code>AI&nbsp;Refrigerator.app</code> in Finder, or run <code>npm run app</code>, or use the button below.</li>
         </ul>
         <div class="row-end"><button class="btn btn-primary" data-action="open-app">🖥️ Open as desktop app</button></div>
+      </div>
+      <div class="panel">
+        <div class="panel-head"><h2>☁️ Cloud Sync</h2></div>
+        <div id="cloudStatus" class="muted small">Checking…</div>
+        <div id="cloudConfig" style="display:none">
+          <label class="field-label" for="cfgSupaUrl">Supabase URL</label>
+          <input class="input" id="cfgSupaUrl" placeholder="https://xxxx.supabase.co">
+          <label class="field-label" for="cfgSupaKey">Supabase anon key</label>
+          <input class="input" id="cfgSupaKey" type="password" autocomplete="off" placeholder="eyJ…">
+          <div class="row-end"><button class="btn btn-primary" data-action="cloud-save-config">Save connection</button></div>
+        </div>
+        <div id="cloudAuth" style="display:none">
+          <label class="field-label" for="cloudEmail">Email</label>
+          <input class="input" id="cloudEmail" type="email" autocomplete="username">
+          <label class="field-label" for="cloudPass">Password</label>
+          <input class="input" id="cloudPass" type="password" autocomplete="current-password">
+          <div class="row-end" style="gap:8px">
+            <button class="btn" data-action="cloud-signup">Sign up</button>
+            <button class="btn btn-primary" data-action="cloud-login">Sign in</button>
+          </div>
+        </div>
+        <div id="cloudSignedIn" style="display:none">
+          <p class="muted small">Sync this device's fridge with your account.</p>
+          <div class="row-end" style="gap:8px">
+            <button class="btn btn-red" data-action="cloud-logout">Sign out</button>
+            <button class="btn" data-action="cloud-pull">⬇ Pull</button>
+            <button class="btn btn-primary" data-action="cloud-push">⬆ Push</button>
+          </div>
+        </div>
       </div>
       <div class="panel">
         <div class="panel-head"><h2>💾 Backup &amp; Restore</h2></div>

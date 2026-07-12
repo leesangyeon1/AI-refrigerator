@@ -6,3 +6,7 @@ node_modules/
 !/data/catalog.json
 *.bak-*
 site/.vercel/
+
+# Supabase CLI local state
+supabase/.temp/
+supabase/.branches/
