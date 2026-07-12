@@ -1204,6 +1204,16 @@ async function detectLatestSessionId(cwd) {
 async function readClaudeSession(pid) {
   return readJsonOrNull(path.join(CLAUDE_SESSIONS_DIR, `${pid}.json`));
 }
+// When a session was originally created — the birth time of its transcript file.
+async function sessionCreatedAt(cwd, sessionId) {
+  if (!cwd || !sessionId) return null;
+  try {
+    const st = await fsp.stat(path.join(os.homedir(), '.claude', 'projects', claudeProjectDir(cwd), sessionId + '.jsonl'));
+    return new Date(st.birthtimeMs || st.ctimeMs).toISOString();
+  } catch {
+    return null;
+  }
+}
 // Write the per-session settings/mcp files for a preset (same shape as session
 // apply) and return their paths. Used when resuming a fridge session with a preset.
 async function writeSessionConfig(preset, cls) {
@@ -1253,6 +1263,7 @@ async function handleSavedSessionSave(req, res) {
     sessionId: sessionId || null,
     presetId,
     breakdown,
+    createdAt: await sessionCreatedAt(cwd, sessionId),
     savedAt: new Date().toISOString(),
   };
   sessions.unshift(entry);

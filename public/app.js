@@ -297,7 +297,7 @@ function setBusy(btn, on, label) {
 }
 
 /* ===== Routing ===== */
-const VIEWS = ['dashboard', 'pantry', 'builder', 'discover', 'apply', 'settings'];
+const VIEWS = ['dashboard', 'saved', 'pantry', 'builder', 'discover', 'apply', 'settings'];
 
 function route() {
   settlePicker(null);
@@ -312,6 +312,7 @@ function route() {
 function renderView(v) {
   const fn = {
     dashboard: renderDashboard,
+    saved: renderSavedSessions,
     pantry: renderPantry,
     builder: renderBuilder,
     discover: renderDiscover,
@@ -502,6 +503,50 @@ async function renderFridge() {
   }).join('');
 }
 
+// Dedicated "Saved Sessions" view: each session's name, when it was created &
+// saved, its preset, and the skills/plugins/MCP it carries.
+async function renderSavedSessions() {
+  const el = $('#savedList');
+  if (!el) return;
+  if (!S.presets.length) { try { await reloadPresets(); } catch { /* ignore */ } }
+  await reloadSaved();
+  const cnt = $('#savedCount');
+  if (cnt) cnt.textContent = S.saved.length ? `(${S.saved.length})` : '';
+  if (!S.saved.length) {
+    el.innerHTML = '<div class="empty-state">No saved sessions yet. On the <a href="#dashboard">Dashboard</a>, click <strong>🧊 Save to fridge</strong> on a running session — it will appear here to resume anytime.</div>';
+    return;
+  }
+  const chip = (label, arr, cls) => (arr && arr.length) ? `<span class="sum-chip"><span class="badge ${cls}">${label}</span> ${arr.length}</span>` : '';
+  const line = (k, arr) => (arr && arr.length) ? `<div class="kv"><span class="k">${k}</span><span class="muted small">${arr.map(esc).join(', ')}</span></div>` : '';
+  el.innerHTML = S.saved.map(s => {
+    const b = s.breakdown || {};
+    const preset = s.presetId ? S.presets.find(p => p.id === s.presetId) : null;
+    const presetLabel = s.presetId ? (preset ? `${preset.emoji || '🍳'} ${preset.name}` : `${esc(s.presetId)} (deleted)`) : 'No preset';
+    return `<div class="item-card sess-drop" style="margin-bottom:10px" data-saved="${esc(s.id)}">
+      <div class="item-top">
+        <span class="item-name">🧊 ${esc(s.name)}</span>
+        <span class="pill pill-off">saved</span>
+      </div>
+      <div class="kv"><span class="k">Created</span><span class="muted small">${esc(s.createdAt ? fmtTime(s.createdAt) : 'unknown')}</span></div>
+      <div class="kv"><span class="k">Saved</span><span class="muted small">${esc(fmtTime(s.savedAt))}</span></div>
+      <div class="kv"><span class="k">Folder</span><span class="muted small">${esc(s.cwd || '—')}</span></div>
+      <div class="kv"><span class="k">Resume ID</span><span class="muted small">${s.sessionId ? esc(s.sessionId) : 'new session'}</span></div>
+      <div class="kv"><span class="k">Preset</span><span>${presetLabel}</span></div>
+      <div class="sum-chips">${chip('Plugin', b.plugin, 'type-plugin')}${chip('MCP', b.mcp, 'type-mcp')}${chip('Skill', b.skill, 'type-skill')}${chip('Agent', b.agent, 'type-agent')}${chip('CLAUDE.md', b.md, 'type-md')}${chip('Tool', b.tool, 'type-tool')}${chip('CLI', b.cli, 'type-cli')}</div>
+      ${line('Plugins', b.plugin)}${line('MCP', b.mcp)}${line('Skills', b.skill)}${line('Agents', b.agent)}
+      <div class="row-end" style="margin-top:8px;gap:6px">
+        <button class="btn btn-sm btn-primary" data-action="fridge-resume" data-id="${esc(s.id)}">▶ Resume</button>
+        <button class="btn btn-sm" data-action="fridge-apply" data-id="${esc(s.id)}">🎯 Preset</button>
+        <button class="btn btn-sm" data-action="fridge-rename" data-id="${esc(s.id)}">✎ Rename</button>
+        <button class="btn btn-sm btn-red" data-action="fridge-delete" data-id="${esc(s.id)}">🗑</button>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+// Refresh both places saved sessions appear: the Dashboard panel and the tab.
+function refreshFridge() { renderFridge(); renderSavedSessions(); }
+
 async function saveSessionToFridge(el) {
   const cwd = el.dataset.cwd || '';
   const presetId = el.dataset.preset || '';
@@ -514,7 +559,7 @@ async function saveSessionToFridge(el) {
   try {
     await api('/api/sessions/saved', { method: 'POST', body: { name: trimmed, cwd: cwd || undefined, presetId: presetId || undefined, sessionId: sid || undefined } });
     toast(`🧊 "${trimmed}" saved to the fridge`);
-    renderFridge();
+    refreshFridge();
   } catch { /* toast handled */ }
 }
 
@@ -539,7 +584,7 @@ async function renameSaved(id) {
   try {
     await api('/api/sessions/saved/' + encodeURIComponent(id), { method: 'PUT', body: { name: trimmed } });
     toast('✎ Renamed');
-    renderFridge();
+    refreshFridge();
   } catch { /* toast handled */ }
 }
 
@@ -555,7 +600,7 @@ async function deleteSaved(id) {
   try {
     await api('/api/sessions/saved/' + encodeURIComponent(id), { method: 'DELETE' });
     toast('🗑 Removed from fridge');
-    renderFridge();
+    refreshFridge();
   } catch { /* toast handled */ }
 }
 
@@ -565,7 +610,7 @@ async function attachPresetToSaved(id, presetId) {
     await api('/api/sessions/saved/' + encodeURIComponent(id), { method: 'PUT', body: { presetId: presetId || null } });
     const p = S.presets.find(x => x.id === presetId);
     toast(`🎯 ${p ? p.name : 'Preset'} attached`);
-    renderFridge();
+    refreshFridge();
   } catch { /* toast handled */ }
 }
 
