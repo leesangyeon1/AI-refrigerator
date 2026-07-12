@@ -9,13 +9,31 @@ import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC_DIR = path.join(__dirname, 'public');
-const DATA_DIR = path.join(__dirname, 'data');
-const PRESETS_DIR = path.join(__dirname, 'presets');
-const CATALOG_PATH = path.join(DATA_DIR, 'catalog.json');
-const CUSTOM_PATH = path.join(DATA_DIR, 'custom-items.json');
-const CONFIG_PATH = path.join(DATA_DIR, 'config.json');
-const STATE_PATH = path.join(DATA_DIR, 'state.json');
-const SESSION_DIR = path.join(os.homedir(), '.ai-refrigerator', 'session-presets');
+// Bundled, read-only app data that ships in the repo (safe to update via git).
+const BUILTIN_DATA_DIR = path.join(__dirname, 'data');
+const CATALOG_PATH = path.join(BUILTIN_DATA_DIR, 'catalog.json'); // built-in catalog
+const SEED_PRESETS_DIR = path.join(__dirname, 'presets');         // sample presets → seed a new user
+
+// ALL user data lives on-device under ~/.ai-refrigerator so `git push`/`pull`
+// never touches it. Presets, custom ingredients, saved sessions, config & state
+// stay local to this machine; each user gets their own private refrigerator.
+const USER_DIR = path.join(os.homedir(), '.ai-refrigerator');
+const USER_DATA_DIR = path.join(USER_DIR, 'data');
+const PRESETS_DIR = path.join(USER_DIR, 'presets');
+// Self-describing store manifest — lets the app recognise & migrate an existing
+// on-device store when re-installed after the project folder was deleted.
+const STORE_MANIFEST_PATH = path.join(USER_DIR, 'store.json');
+const STORE_VERSION = 1;
+const APP_VERSION = '1.1.0';
+const CUSTOM_PATH = path.join(USER_DATA_DIR, 'custom-items.json');
+const CONFIG_PATH = path.join(USER_DATA_DIR, 'config.json');
+const STATE_PATH = path.join(USER_DATA_DIR, 'state.json');
+const SESSIONS_PATH = path.join(USER_DATA_DIR, 'sessions.json');
+// Claude Code's own per-session store: ~/.claude/sessions/<pid>.json holds the
+// { pid, sessionId, cwd, name, … } that `/rename` writes to. We read/write the
+// same file so a name set here shows up in Claude Code and vice-versa.
+const CLAUDE_SESSIONS_DIR = path.join(os.homedir(), '.claude', 'sessions');
+const SESSION_DIR = path.join(USER_DIR, 'session-presets');
 
 const MAX_BODY = 2 * 1024 * 1024;
 const ID_RE = /^[a-z0-9-]{1,64}$/;
@@ -794,13 +812,21 @@ async function handleApply(req, res) {
     await writeJsonFile(settingsPath, { enabledPlugins: Object.fromEntries(cls.pluginItems.map((i) => [i.plugin, true])) });
     // Session scope enables plugins AND MCP servers: plugins via --settings,
     // MCP servers via --mcp-config (both are per-session, nothing permanent).
-    let command = `claude --settings ${settingsPath}`;
     let mcpPath = null;
     if (cls.mcpItems.length) {
       mcpPath = path.join(SESSION_DIR, `${preset.id}.mcp.json`);
       await writeJsonFile(mcpPath, { mcpServers: Object.fromEntries(cls.mcpItems.map((i) => [i.id, i.mcpConfig])) });
-      command += ` --mcp-config ${mcpPath}`;
     }
+    // Optionally scope the command to a specific session: prefix `cd <cwd>` and
+    // add `--resume <id>` so the preset re-applies when that session is relaunched.
+    const tgtCwd = typeof body.cwd === 'string' && body.cwd.trim() ? body.cwd.trim() : null;
+    const tgtSid = typeof body.sessionId === 'string' && body.sessionId.trim() ? body.sessionId.trim() : null;
+    const cmdParts = ['claude'];
+    if (tgtSid) cmdParts.push('--resume', shq(tgtSid));
+    cmdParts.push('--settings', settingsPath);
+    if (mcpPath) cmdParts.push('--mcp-config', mcpPath);
+    let command = cmdParts.join(' ');
+    if (tgtCwd) command = `cd ${shq(tgtCwd)} && ${command}`;
     await recordApply(preset.id, 'session', settingsPath);
     // Skills / tools / agents / md can't be "enabled" per-session — they must be
     // installed. Surface them so the UI can point the user to the install script.
@@ -1038,7 +1064,35 @@ async function handleSessions(res) {
     }
   }
 
-  // 3) Shape each running session with its EFFECTIVE (actually active) config,
+  // 3) Resolve each running process's session UUID + name from Claude Code's own
+  //    per-pid file (authoritative, and the same file `/rename` writes to). Fall
+  //    back to the --resume arg, then to one recent transcript per fresh session
+  //    (distinct) so save/rename still target ONE session, not the whole folder.
+  const sidByPid = {};
+  const nameByPid = {};
+  const usedIds = new Set();
+  for (const p of procs) {
+    const cs = await readClaudeSession(p.pid);
+    if (cs && typeof cs.name === 'string' && cs.name.trim()) nameByPid[p.pid] = cs.name.trim();
+    const id = (cs && cs.sessionId) || parseClaudeArgs(p.args).resume || null;
+    if (id) { sidByPid[p.pid] = id; usedIds.add(id); }
+  }
+  const freshByCwd = new Map();
+  for (const p of procs) {
+    if (sidByPid[p.pid]) continue;
+    const c = cwds[p.pid] || '';
+    if (!freshByCwd.has(c)) freshByCwd.set(c, []);
+    freshByCwd.get(c).push(p);
+  }
+  for (const [cwd, list] of freshByCwd) {
+    const pool = (await recentSessionIds(cwd)).filter((id) => !usedIds.has(id));
+    list.forEach((p, i) => {
+      const id = pool[i] || null;
+      if (id) { sidByPid[p.pid] = id; usedIds.add(id); }
+    });
+  }
+
+  // 4) Shape each running session with its EFFECTIVE (actually active) config,
   //    read from that session's real config sources — even if not from a preset.
   const running = [];
   for (const p of procs) {
@@ -1067,17 +1121,19 @@ async function handleSessions(res) {
       cwd,
       mode,
       label,
+      customLabel: nameByPid[p.pid] || null,
       presetName,
       settingsPath: a.settingsPath,
       mcpPath: a.mcpPath,
       resume: a.resume || null,
+      sessionId: sidByPid[p.pid] || null,
       plugins: breakdown.plugin,
       mcpServers: breakdown.mcp,
       breakdown,
     });
   }
 
-  // 4) Refrigerator-generated session configs (available to launch), flagged if running
+  // 5) Refrigerator-generated session configs (available to launch), flagged if running
   const configs = [];
   try {
     for (const f of (await fsp.readdir(SESSION_DIR)).filter((x) => x.endsWith('.settings.json'))) {
@@ -1105,6 +1161,281 @@ async function handleSessions(res) {
   } catch {}
 
   ok(res, { running, configs });
+}
+
+// ── Saved sessions ("session fridge") ─────────────────────
+// Persist a running/idle session's identity + preset so it can be resumed
+// later (claude --resume) with the same preset re-applied — literally putting
+// a session in the fridge and taking it back out when needed.
+async function loadSavedSessions() {
+  const raw = await readJsonOrNull(SESSIONS_PATH);
+  return Array.isArray(raw) ? raw : [];
+}
+// Claude Code stores each session transcript at
+// ~/.claude/projects/<escaped-cwd>/<uuid>.jsonl, where the folder name is the
+// absolute cwd with every non-alphanumeric char replaced by '-'.
+function claudeProjectDir(cwd) {
+  return String(cwd || '').replace(/[^a-zA-Z0-9]/g, '-');
+}
+// UUIDs of a folder's session transcripts, most-recently-active first.
+async function recentSessionIds(cwd) {
+  if (!cwd) return [];
+  const dir = path.join(os.homedir(), '.claude', 'projects', claudeProjectDir(cwd));
+  let files;
+  try {
+    files = (await fsp.readdir(dir)).filter((f) => f.endsWith('.jsonl'));
+  } catch {
+    return [];
+  }
+  const withTime = [];
+  for (const f of files) {
+    let mtime = 0;
+    try {
+      mtime = (await fsp.stat(path.join(dir, f))).mtimeMs;
+    } catch {}
+    withTime.push({ id: f.slice(0, -'.jsonl'.length), mtime });
+  }
+  return withTime.sort((a, b) => b.mtime - a.mtime).map((x) => x.id);
+}
+async function detectLatestSessionId(cwd) {
+  return (await recentSessionIds(cwd))[0] || null;
+}
+// Claude Code's per-session file for a pid — the authoritative { sessionId, name, … }.
+async function readClaudeSession(pid) {
+  return readJsonOrNull(path.join(CLAUDE_SESSIONS_DIR, `${pid}.json`));
+}
+// When a session was originally created — the birth time of its transcript file.
+async function sessionCreatedAt(cwd, sessionId) {
+  if (!cwd || !sessionId) return null;
+  try {
+    const st = await fsp.stat(path.join(os.homedir(), '.claude', 'projects', claudeProjectDir(cwd), sessionId + '.jsonl'));
+    return new Date(st.birthtimeMs || st.ctimeMs).toISOString();
+  } catch {
+    return null;
+  }
+}
+// Write the per-session settings/mcp files for a preset (same shape as session
+// apply) and return their paths. Used when resuming a fridge session with a preset.
+async function writeSessionConfig(preset, cls) {
+  await fsp.mkdir(SESSION_DIR, { recursive: true });
+  const settingsPath = path.join(SESSION_DIR, `${preset.id}.settings.json`);
+  await writeJsonFile(settingsPath, { enabledPlugins: Object.fromEntries(cls.pluginItems.map((i) => [i.plugin, true])) });
+  let mcpPath = null;
+  if (cls.mcpItems.length) {
+    mcpPath = path.join(SESSION_DIR, `${preset.id}.mcp.json`);
+    await writeJsonFile(mcpPath, { mcpServers: Object.fromEntries(cls.mcpItems.map((i) => [i.id, i.mcpConfig])) });
+  }
+  return { settingsPath, mcpPath };
+}
+
+async function handleSavedSessionsGet(res) {
+  ok(res, await loadSavedSessions());
+}
+
+async function handleSavedSessionSave(req, res) {
+  const body = await readJsonBody(req);
+  const name = String(body.name || '').trim();
+  if (!name) return fail(res, 400, 'name is required');
+  let cwd = String(body.cwd || '').trim();
+  if (cwd) {
+    if (cwd === '~' || cwd.startsWith('~/')) cwd = path.join(os.homedir(), cwd.slice(1));
+    cwd = path.resolve(cwd);
+  }
+  const presetId = body.presetId ? String(body.presetId) : null;
+  if (presetId && !ID_RE.test(presetId)) return fail(res, 400, 'Invalid presetId');
+  if (presetId && !(await loadPreset(presetId))) return fail(res, 404, `Preset not found: ${presetId}`);
+  // Session UUID: use the one supplied, else auto-detect the newest transcript for this cwd.
+  let sessionId = body.sessionId ? String(body.sessionId).trim() : null;
+  if (!sessionId && cwd) sessionId = await detectLatestSessionId(cwd);
+  // Snapshot the config for at-a-glance display in the fridge.
+  let breakdown = emptyBreakdown();
+  if (presetId) {
+    const items = await loadMergedCatalog();
+    breakdown = buildBreakdown(await loadPreset(presetId), new Map(items.map((i) => [i.id, i])));
+  } else if (cwd) {
+    breakdown = await inspectClaude(cwd, null, null);
+  }
+  const sessions = await loadSavedSessions();
+  const entry = {
+    id: `${kebab(name).slice(0, 40) || 'session'}-${Date.now().toString(36)}`,
+    name,
+    cwd: cwd || null,
+    sessionId: sessionId || null,
+    presetId,
+    breakdown,
+    createdAt: await sessionCreatedAt(cwd, sessionId),
+    savedAt: new Date().toISOString(),
+  };
+  sessions.unshift(entry);
+  await writeJsonFile(SESSIONS_PATH, sessions);
+  ok(res, entry);
+}
+
+async function handleSavedSessionUpdate(req, res, id) {
+  const body = await readJsonBody(req);
+  const sessions = await loadSavedSessions();
+  const idx = sessions.findIndex((s) => s.id === id);
+  if (idx === -1) return fail(res, 404, 'Saved session not found');
+  if (body.name !== undefined) {
+    const name = String(body.name).trim();
+    if (!name) return fail(res, 400, 'name cannot be empty');
+    sessions[idx].name = name;
+  }
+  if (body.presetId !== undefined) {
+    const presetId = body.presetId ? String(body.presetId) : null;
+    if (presetId && !ID_RE.test(presetId)) return fail(res, 400, 'Invalid presetId');
+    if (presetId && !(await loadPreset(presetId))) return fail(res, 404, `Preset not found: ${presetId}`);
+    sessions[idx].presetId = presetId;
+  }
+  await writeJsonFile(SESSIONS_PATH, sessions);
+  ok(res, sessions[idx]);
+}
+
+async function handleSavedSessionDelete(res, id) {
+  const sessions = await loadSavedSessions();
+  const next = sessions.filter((s) => s.id !== id);
+  if (next.length === sessions.length) return fail(res, 404, 'Saved session not found');
+  await writeJsonFile(SESSIONS_PATH, next);
+  ok(res, { deleted: id });
+}
+
+// Escape a string for embedding inside an AppleScript double-quoted literal.
+function osaEscape(s) {
+  return String(s).replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+}
+
+// Relaunch a saved session: open Terminal.app in its cwd and run
+// `claude --resume <id>` with the preset's --settings/--mcp-config re-applied.
+async function handleSessionResume(req, res) {
+  const body = await readJsonBody(req);
+  const id = String(body.id || '');
+  const sessions = await loadSavedSessions();
+  const entry = sessions.find((s) => s.id === id);
+  if (!entry) return fail(res, 404, 'Saved session not found');
+
+  const parts = [];
+  if (entry.cwd) parts.push('cd', shq(entry.cwd), '&&');
+  parts.push('claude');
+  if (entry.sessionId) parts.push('--resume', shq(entry.sessionId));
+  if (entry.presetId) {
+    const preset = await loadPreset(entry.presetId);
+    if (preset) {
+      const items = await loadMergedCatalog();
+      const cls = classify(preset, items);
+      const { settingsPath, mcpPath } = await writeSessionConfig(preset, cls);
+      parts.push('--settings', shq(settingsPath));
+      if (mcpPath) parts.push('--mcp-config', shq(mcpPath));
+      await recordApply(preset.id, 'session', settingsPath);
+    }
+  }
+  const command = parts.join(' ');
+
+  const launch = process.platform === 'darwin' && body.launch !== false;
+  if (launch) {
+    execFile('osascript', [
+      '-e', `tell application "Terminal" to do script "${osaEscape(command)}"`,
+      '-e', 'tell application "Terminal" to activate',
+    ], () => {});
+  }
+  ok(res, { command, launched: launch });
+}
+
+// Rename ONE session by writing the `name` field of Claude Code's own
+// ~/.claude/sessions/<pid>.json — the exact file `/rename` uses. Because we read
+// the same file back for the Sessions list, names stay in sync both directions.
+async function handleSessionLabel(req, res) {
+  const body = await readJsonBody(req);
+  const pid = String(body.pid || '').trim();
+  if (!/^\d+$/.test(pid)) return fail(res, 400, 'A numeric pid is required to rename a running session');
+  const label = typeof body.label === 'string' ? body.label.trim() : '';
+  const file = path.join(CLAUDE_SESSIONS_DIR, `${pid}.json`);
+  const cs = await readJsonOrNull(file);
+  if (!cs || typeof cs !== 'object') return fail(res, 404, 'No Claude session file for this pid (it may have exited)');
+  if (label) cs.name = label;
+  else delete cs.name;
+  delete cs.nameSource; // a user-set name has no auto source, matching /rename
+  cs.updatedAt = new Date().toISOString();
+  await writeJsonFile(file, cs);
+  ok(res, { pid, name: label || null });
+}
+
+// Open a standalone desktop app window (Chromium --app) pointing at this server,
+// so the app can be used as an application in addition to a plain browser tab.
+async function handleOpenApp(res) {
+  if (process.platform !== 'darwin') return ok(res, { opened: false });
+  openAppWindow(`http://127.0.0.1:${PORT}`);
+  ok(res, { opened: true });
+}
+
+// ── Store (on-device data): info · backup · restore ───────
+async function loadAllPresets() {
+  let files = [];
+  try { files = (await fsp.readdir(PRESETS_DIR)).filter((f) => f.endsWith('.json')); } catch {}
+  const out = [];
+  for (const f of files) {
+    const p = await readJsonOrNull(path.join(PRESETS_DIR, f));
+    if (p && p.id) out.push(p);
+  }
+  return out;
+}
+async function handleStoreInfo(res) {
+  const manifest = (await readJsonOrNull(STORE_MANIFEST_PATH)) || {};
+  const presets = await loadAllPresets();
+  const custom = (await readJsonOrNull(CUSTOM_PATH)) || [];
+  const sessions = await loadSavedSessions();
+  ok(res, {
+    dir: USER_DIR,
+    storeVersion: manifest.storeVersion || STORE_VERSION,
+    appVersion: manifest.appVersion || APP_VERSION,
+    createdAt: manifest.createdAt || null,
+    updatedAt: manifest.updatedAt || null,
+    counts: { presets: presets.length, customItems: Array.isArray(custom) ? custom.length : 0, sessions: sessions.length },
+  });
+}
+// Download the whole on-device store as one portable file — so it can be reused
+// after deleting/reinstalling the app, or moved to another machine.
+async function handleStoreExport(res) {
+  const bundle = {
+    _bundle: 'ai-refrigerator',
+    version: STORE_VERSION,
+    appVersion: APP_VERSION,
+    exportedAt: new Date().toISOString(),
+    presets: await loadAllPresets(),
+    customItems: (await readJsonOrNull(CUSTOM_PATH)) || [],
+    sessions: await loadSavedSessions(),
+  };
+  res.writeHead(200, {
+    'Content-Type': 'application/json; charset=utf-8',
+    'Content-Disposition': 'attachment; filename="ai-refrigerator-backup.json"',
+  });
+  res.end(JSON.stringify(bundle, null, 2));
+}
+async function handleStoreImport(req, res) {
+  const body = await readJsonBody(req);
+  if (!body || body._bundle !== 'ai-refrigerator') return fail(res, 400, 'Not an AI Refrigerator backup file');
+  let presetsAdded = 0, itemsAdded = 0, sessionsAdded = 0;
+  for (const p of Array.isArray(body.presets) ? body.presets : []) {
+    if (!p || !ID_RE.test(String(p.id || '')) || !Array.isArray(p.items)) continue;
+    await writeJsonFile(path.join(PRESETS_DIR, p.id + '.json'), p);
+    presetsAdded++;
+  }
+  if (Array.isArray(body.customItems) && body.customItems.length) {
+    const cur = (await readJsonOrNull(CUSTOM_PATH)) || [];
+    const byId = new Map((Array.isArray(cur) ? cur : []).map((i) => [i.id, i]));
+    for (const it of body.customItems) {
+      if (it && it.id && !byId.has(it.id)) { byId.set(it.id, it); itemsAdded++; }
+    }
+    await writeJsonFile(CUSTOM_PATH, [...byId.values()]);
+  }
+  if (Array.isArray(body.sessions) && body.sessions.length) {
+    const cur = await loadSavedSessions();
+    const ids = new Set(cur.map((s) => s.id));
+    for (const s of body.sessions) {
+      if (s && s.id && !ids.has(s.id)) { cur.push(s); ids.add(s.id); sessionsAdded++; }
+    }
+    await writeJsonFile(SESSIONS_PATH, cur);
+  }
+  ok(res, { presetsAdded, itemsAdded, sessionsAdded });
 }
 
 // ── Static files ──────────────────────────────────────────
@@ -1209,22 +1540,77 @@ async function handle(req, res) {
   if (method === 'POST' && pathname === '/api/config') return handleConfigPost(req, res);
   if (method === 'GET' && pathname === '/api/state') return handleStateGet(res);
   if (method === 'GET' && pathname === '/api/sessions') return handleSessions(res);
+  if (method === 'GET' && pathname === '/api/sessions/saved') return handleSavedSessionsGet(res);
+  if (method === 'POST' && pathname === '/api/sessions/saved') return handleSavedSessionSave(req, res);
+  if (pathname.startsWith('/api/sessions/saved/')) {
+    const id = decodeURIComponent(pathname.slice('/api/sessions/saved/'.length));
+    if (method === 'PUT') return handleSavedSessionUpdate(req, res, id);
+    if (method === 'DELETE') return handleSavedSessionDelete(res, id);
+  }
+  if (method === 'POST' && pathname === '/api/sessions/resume') return handleSessionResume(req, res);
+  if (method === 'POST' && pathname === '/api/sessions/label') return handleSessionLabel(req, res);
+  if (method === 'POST' && pathname === '/api/open-app') return handleOpenApp(res);
+  if (method === 'GET' && pathname === '/api/store') return handleStoreInfo(res);
+  if (method === 'GET' && pathname === '/api/store/export') return handleStoreExport(res);
+  if (method === 'POST' && pathname === '/api/store/import') return handleStoreImport(req, res);
 
   fail(res, 404, 'The requested API path was not found');
 }
 
 // ── Initialization & startup ──────────────────────────────
 async function ensureRuntimeFiles() {
-  await fsp.mkdir(DATA_DIR, { recursive: true });
+  await fsp.mkdir(USER_DATA_DIR, { recursive: true });
   await fsp.mkdir(PRESETS_DIR, { recursive: true });
+  await fsp.mkdir(SESSION_DIR, { recursive: true });
+
+  const copyIfMissing = async (src, dst) => {
+    if (await exists(dst)) return;
+    const raw = await readFileOrNull(src);
+    if (raw != null) await fsp.writeFile(dst, raw);
+  };
+
+  // One-time migration: move any data that used to live in the repo (older
+  // versions) to the on-device user dir, so upgrading users keep their data.
+  const OLD_DATA = path.join(__dirname, 'data');
+  for (const [name, dst] of [
+    ['custom-items.json', CUSTOM_PATH],
+    ['config.json', CONFIG_PATH],
+    ['state.json', STATE_PATH],
+    ['sessions.json', SESSIONS_PATH],
+  ]) {
+    await copyIfMissing(path.join(OLD_DATA, name), dst);
+  }
+
+  // Seed presets from the bundled samples on first run only (also migrates presets
+  // that used to live in the repo). After that, the user's presets are never
+  // overwritten — updating the app via git never changes on-device presets.
+  let userPresets = [];
+  try { userPresets = (await fsp.readdir(PRESETS_DIR)).filter((f) => f.endsWith('.json')); } catch {}
+  if (!userPresets.length) {
+    let seeds = [];
+    try { seeds = (await fsp.readdir(SEED_PRESETS_DIR)).filter((f) => f.endsWith('.json')); } catch {}
+    for (const f of seeds) await copyIfMissing(path.join(SEED_PRESETS_DIR, f), path.join(PRESETS_DIR, f));
+  }
+
   const defaults = [
     [CONFIG_PATH, DEFAULT_CONFIG],
     [STATE_PATH, DEFAULT_STATE],
     [CUSTOM_PATH, []],
+    [SESSIONS_PATH, []],
   ];
   for (const [p, def] of defaults) {
     if (!(await exists(p))) await writeJsonFile(p, def);
   }
+
+  // Write/refresh the store manifest so the on-device store is self-describing.
+  const prev = await readJsonOrNull(STORE_MANIFEST_PATH);
+  await writeJsonFile(STORE_MANIFEST_PATH, {
+    store: 'ai-refrigerator',
+    storeVersion: STORE_VERSION,
+    appVersion: APP_VERSION,
+    createdAt: (prev && prev.createdAt) || new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  });
 }
 
 await ensureRuntimeFiles();
