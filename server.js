@@ -9,18 +9,26 @@ import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC_DIR = path.join(__dirname, 'public');
-const DATA_DIR = path.join(__dirname, 'data');
-const PRESETS_DIR = path.join(__dirname, 'presets');
-const CATALOG_PATH = path.join(DATA_DIR, 'catalog.json');
-const CUSTOM_PATH = path.join(DATA_DIR, 'custom-items.json');
-const CONFIG_PATH = path.join(DATA_DIR, 'config.json');
-const STATE_PATH = path.join(DATA_DIR, 'state.json');
-const SESSIONS_PATH = path.join(DATA_DIR, 'sessions.json');
+// Bundled, read-only app data that ships in the repo (safe to update via git).
+const BUILTIN_DATA_DIR = path.join(__dirname, 'data');
+const CATALOG_PATH = path.join(BUILTIN_DATA_DIR, 'catalog.json'); // built-in catalog
+const SEED_PRESETS_DIR = path.join(__dirname, 'presets');         // sample presets → seed a new user
+
+// ALL user data lives on-device under ~/.ai-refrigerator so `git push`/`pull`
+// never touches it. Presets, custom ingredients, saved sessions, config & state
+// stay local to this machine; each user gets their own private refrigerator.
+const USER_DIR = path.join(os.homedir(), '.ai-refrigerator');
+const USER_DATA_DIR = path.join(USER_DIR, 'data');
+const PRESETS_DIR = path.join(USER_DIR, 'presets');
+const CUSTOM_PATH = path.join(USER_DATA_DIR, 'custom-items.json');
+const CONFIG_PATH = path.join(USER_DATA_DIR, 'config.json');
+const STATE_PATH = path.join(USER_DATA_DIR, 'state.json');
+const SESSIONS_PATH = path.join(USER_DATA_DIR, 'sessions.json');
 // Claude Code's own per-session store: ~/.claude/sessions/<pid>.json holds the
 // { pid, sessionId, cwd, name, … } that `/rename` writes to. We read/write the
 // same file so a name set here shows up in Claude Code and vice-versa.
 const CLAUDE_SESSIONS_DIR = path.join(os.homedir(), '.claude', 'sessions');
-const SESSION_DIR = path.join(os.homedir(), '.ai-refrigerator', 'session-presets');
+const SESSION_DIR = path.join(USER_DIR, 'session-presets');
 
 const MAX_BODY = 2 * 1024 * 1024;
 const ID_RE = /^[a-z0-9-]{1,64}$/;
@@ -1461,8 +1469,39 @@ async function handle(req, res) {
 
 // ── Initialization & startup ──────────────────────────────
 async function ensureRuntimeFiles() {
-  await fsp.mkdir(DATA_DIR, { recursive: true });
+  await fsp.mkdir(USER_DATA_DIR, { recursive: true });
   await fsp.mkdir(PRESETS_DIR, { recursive: true });
+  await fsp.mkdir(SESSION_DIR, { recursive: true });
+
+  const copyIfMissing = async (src, dst) => {
+    if (await exists(dst)) return;
+    const raw = await readFileOrNull(src);
+    if (raw != null) await fsp.writeFile(dst, raw);
+  };
+
+  // One-time migration: move any data that used to live in the repo (older
+  // versions) to the on-device user dir, so upgrading users keep their data.
+  const OLD_DATA = path.join(__dirname, 'data');
+  for (const [name, dst] of [
+    ['custom-items.json', CUSTOM_PATH],
+    ['config.json', CONFIG_PATH],
+    ['state.json', STATE_PATH],
+    ['sessions.json', SESSIONS_PATH],
+  ]) {
+    await copyIfMissing(path.join(OLD_DATA, name), dst);
+  }
+
+  // Seed presets from the bundled samples on first run only (also migrates presets
+  // that used to live in the repo). After that, the user's presets are never
+  // overwritten — updating the app via git never changes on-device presets.
+  let userPresets = [];
+  try { userPresets = (await fsp.readdir(PRESETS_DIR)).filter((f) => f.endsWith('.json')); } catch {}
+  if (!userPresets.length) {
+    let seeds = [];
+    try { seeds = (await fsp.readdir(SEED_PRESETS_DIR)).filter((f) => f.endsWith('.json')); } catch {}
+    for (const f of seeds) await copyIfMissing(path.join(SEED_PRESETS_DIR, f), path.join(PRESETS_DIR, f));
+  }
+
   const defaults = [
     [CONFIG_PATH, DEFAULT_CONFIG],
     [STATE_PATH, DEFAULT_STATE],

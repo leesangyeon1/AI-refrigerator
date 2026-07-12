@@ -199,9 +199,8 @@
       <div class="panel">
         <div class="panel-head"><h2>📁 Data Location</h2></div>
         <ul class="data-loc">
-          <li><code>presets/</code> — Preset recipe JSON (shareable)</li>
-          <li><code>data/</code> — Catalog · custom ingredients · settings · apply history</li>
-          <li><code>~/.ai-refrigerator/session-presets/</code> — settings files for session apply</li>
+          <li><strong>On-device — yours, never pushed to GitHub:</strong> <code>~/.ai-refrigerator/</code> holds your <code>presets/</code>, <code>data/</code> (custom ingredients · saved sessions · settings · history), and <code>session-presets/</code>. Updating the app via git never touches these.</li>
+          <li><strong>Bundled with the app — updated by git:</strong> <code>presets/</code> sample recipes &amp; <code>data/catalog.json</code> built-in catalog. Used only to seed a fresh install.</li>
         </ul>
       </div>
     </section>

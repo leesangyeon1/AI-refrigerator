@@ -1,8 +1,8 @@
 .DS_Store
 node_modules/
-data/config.json
-data/state.json
-data/sessions.json
-data/custom-items.json
+# User data lives on-device in ~/.ai-refrigerator (never committed).
+# In-repo data/ only ships the built-in catalog used to seed a fresh install.
+/data/*
+!/data/catalog.json
 *.bak-*
 site/.vercel/
