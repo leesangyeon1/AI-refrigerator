@@ -16,7 +16,10 @@ const CUSTOM_PATH = path.join(DATA_DIR, 'custom-items.json');
 const CONFIG_PATH = path.join(DATA_DIR, 'config.json');
 const STATE_PATH = path.join(DATA_DIR, 'state.json');
 const SESSIONS_PATH = path.join(DATA_DIR, 'sessions.json');
-const SESSION_LABELS_PATH = path.join(DATA_DIR, 'session-labels.json');
+// Claude Code's own per-session store: ~/.claude/sessions/<pid>.json holds the
+// { pid, sessionId, cwd, name, … } that `/rename` writes to. We read/write the
+// same file so a name set here shows up in Claude Code and vice-versa.
+const CLAUDE_SESSIONS_DIR = path.join(os.homedir(), '.claude', 'sessions');
 const SESSION_DIR = path.join(os.homedir(), '.ai-refrigerator', 'session-presets');
 
 const MAX_BODY = 2 * 1024 * 1024;
@@ -1012,8 +1015,6 @@ async function inspectClaude(cwd, settingsFlag, mcpFlag) {
 async function handleSessions(res) {
   const items = await loadMergedCatalog();
   const byId = new Map(items.map((i) => [i.id, i]));
-  const labelsRaw = await readJsonOrNull(SESSION_LABELS_PATH);
-  const labels = labelsRaw && typeof labelsRaw === 'object' && !Array.isArray(labelsRaw) ? labelsRaw : {};
 
   // 1) Enumerate ALL running `claude` CLI processes (not the desktop app / plugin procs / this server)
   const ps = await run('ps', ['-Ao', 'pid=,args='], { timeout: 6000 });
@@ -1050,14 +1051,18 @@ async function handleSessions(res) {
     }
   }
 
-  // 3) Give each running process a DISTINCT session UUID so save/rename target ONE
-  //    session — not every session sharing a folder. Resumed sessions use their
-  //    --resume UUID; each fresh session gets one recent transcript from its dir.
+  // 3) Resolve each running process's session UUID + name from Claude Code's own
+  //    per-pid file (authoritative, and the same file `/rename` writes to). Fall
+  //    back to the --resume arg, then to one recent transcript per fresh session
+  //    (distinct) so save/rename still target ONE session, not the whole folder.
   const sidByPid = {};
+  const nameByPid = {};
   const usedIds = new Set();
   for (const p of procs) {
-    const r = parseClaudeArgs(p.args).resume;
-    if (r) { sidByPid[p.pid] = r; usedIds.add(r); }
+    const cs = await readClaudeSession(p.pid);
+    if (cs && typeof cs.name === 'string' && cs.name.trim()) nameByPid[p.pid] = cs.name.trim();
+    const id = (cs && cs.sessionId) || parseClaudeArgs(p.args).resume || null;
+    if (id) { sidByPid[p.pid] = id; usedIds.add(id); }
   }
   const freshByCwd = new Map();
   for (const p of procs) {
@@ -1103,7 +1108,7 @@ async function handleSessions(res) {
       cwd,
       mode,
       label,
-      customLabel: sidByPid[p.pid] ? labels[sidByPid[p.pid]] || null : null,
+      customLabel: nameByPid[p.pid] || null,
       presetName,
       settingsPath: a.settingsPath,
       mcpPath: a.mcpPath,
@@ -1181,6 +1186,10 @@ async function recentSessionIds(cwd) {
 }
 async function detectLatestSessionId(cwd) {
   return (await recentSessionIds(cwd))[0] || null;
+}
+// Claude Code's per-session file for a pid — the authoritative { sessionId, name, … }.
+async function readClaudeSession(pid) {
+  return readJsonOrNull(path.join(CLAUDE_SESSIONS_DIR, `${pid}.json`));
 }
 // Write the per-session settings/mcp files for a preset (same shape as session
 // apply) and return their paths. Used when resuming a fridge session with a preset.
@@ -1307,19 +1316,23 @@ async function handleSessionResume(req, res) {
   ok(res, { command, launched: launch });
 }
 
-// Label (rename) ONE session by its session UUID — like Claude Code's /rename.
-// Persisted so the name follows that specific session, even across resume.
+// Rename ONE session by writing the `name` field of Claude Code's own
+// ~/.claude/sessions/<pid>.json — the exact file `/rename` uses. Because we read
+// the same file back for the Sessions list, names stay in sync both directions.
 async function handleSessionLabel(req, res) {
   const body = await readJsonBody(req);
-  const sessionId = typeof body.sessionId === 'string' ? body.sessionId.trim() : '';
-  if (!sessionId) return fail(res, 400, 'sessionId is required (this session could not be identified)');
+  const pid = String(body.pid || '').trim();
+  if (!/^\d+$/.test(pid)) return fail(res, 400, 'A numeric pid is required to rename a running session');
   const label = typeof body.label === 'string' ? body.label.trim() : '';
-  const raw = await readJsonOrNull(SESSION_LABELS_PATH);
-  const labels = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {};
-  if (label) labels[sessionId] = label;
-  else delete labels[sessionId];
-  await writeJsonFile(SESSION_LABELS_PATH, labels);
-  ok(res, { sessionId, label: label || null });
+  const file = path.join(CLAUDE_SESSIONS_DIR, `${pid}.json`);
+  const cs = await readJsonOrNull(file);
+  if (!cs || typeof cs !== 'object') return fail(res, 404, 'No Claude session file for this pid (it may have exited)');
+  if (label) cs.name = label;
+  else delete cs.name;
+  delete cs.nameSource; // a user-set name has no auto source, matching /rename
+  cs.updatedAt = new Date().toISOString();
+  await writeJsonFile(file, cs);
+  ok(res, { pid, name: label || null });
 }
 
 // ── Static files ──────────────────────────────────────────
@@ -1446,7 +1459,6 @@ async function ensureRuntimeFiles() {
     [STATE_PATH, DEFAULT_STATE],
     [CUSTOM_PATH, []],
     [SESSIONS_PATH, []],
-    [SESSION_LABELS_PATH, {}],
   ];
   for (const [p, def] of defaults) {
     if (!(await exists(p))) await writeJsonFile(p, def);
