@@ -1335,6 +1335,14 @@ async function handleSessionLabel(req, res) {
   ok(res, { pid, name: label || null });
 }
 
+// Open a standalone desktop app window (Chromium --app) pointing at this server,
+// so the app can be used as an application in addition to a plain browser tab.
+async function handleOpenApp(res) {
+  if (process.platform !== 'darwin') return ok(res, { opened: false });
+  openAppWindow(`http://127.0.0.1:${PORT}`);
+  ok(res, { opened: true });
+}
+
 // ── Static files ──────────────────────────────────────────
 async function serveStatic(res, pathname) {
   let p;
@@ -1446,6 +1454,7 @@ async function handle(req, res) {
   }
   if (method === 'POST' && pathname === '/api/sessions/resume') return handleSessionResume(req, res);
   if (method === 'POST' && pathname === '/api/sessions/label') return handleSessionLabel(req, res);
+  if (method === 'POST' && pathname === '/api/open-app') return handleOpenApp(res);
 
   fail(res, 404, 'The requested API path was not found');
 }

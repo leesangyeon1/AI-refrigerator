@@ -723,6 +723,25 @@ function pantryCard(i) {
   </div>`;
 }
 
+// When set, the next custom-add keeps this exact id so a missing preset
+// reference resolves once the ingredient is back in the fridge.
+let pendingCustomId = null;
+
+// Prefill the Custom Ingredient modal to re-add a missing preset item, keeping
+// its id so the preset stops showing it as missing.
+function restoreMissing(id) {
+  const g = parseGhId(id);
+  pendingCustomId = id;
+  $('#cmName').value = g.name;
+  $('#cmUrl').value = g.url;
+  $('#cmType').value = 'plugin';
+  $('#cmDesc').value = '';
+  $('#cmInstall').value = '';
+  $('#cmTags').value = '';
+  showModal('customModal');
+  $('#cmName').focus();
+}
+
 async function submitCustom() {
   const name = $('#cmName').value.trim();
   if (!name) { toast('Enter a name', 'error'); return; }
@@ -734,11 +753,13 @@ async function submitCustom() {
     install: $('#cmInstall').value.trim() || null,
     tags: $('#cmTags').value.split(',').map(s => s.trim()).filter(Boolean),
   };
+  if (pendingCustomId) body.id = pendingCustomId;
   try {
     await api('/api/catalog/items', { method: 'POST', body });
     hideModal('customModal');
     ['cmName', 'cmUrl', 'cmDesc', 'cmInstall', 'cmTags'].forEach(id => { $('#' + id).value = ''; });
     toast(`🧊 "${name}" added to the refrigerator`);
+    pendingCustomId = null;
     await reloadCatalog();
     renderView(S.ui.view);
   } catch { /* toast handled */ }
@@ -758,6 +779,16 @@ async function deleteCustom(id) {
     await reloadCatalog();
     renderView(S.ui.view);
   } catch { /* toast handled */ }
+}
+
+// Launch a standalone desktop app window (Chromium --app) from the running server.
+async function openAsApp(btn) {
+  try {
+    setBusy(btn, true, 'Opening…');
+    const d = await api('/api/open-app', { method: 'POST', body: {} });
+    toast(d && d.opened ? '🖥 Opening a desktop app window…' : 'App window not available on this platform', d && d.opened ? 'success' : 'error');
+  } catch { /* toast handled */ }
+  finally { setBusy(btn, false); }
 }
 
 async function onAddToPreset(anchor, itemId) {
@@ -847,12 +878,33 @@ function renderBuilderCols() {
   el.innerHTML = html;
 }
 
+// A missing item is only known by its id (e.g. "gh-swiftlang-swift"). Recover a
+// friendly repo name + URL as a best guess (owner = up to the first hyphen).
+function parseGhId(id) {
+  if (typeof id === 'string' && id.startsWith('gh-')) {
+    const rest = id.slice(3);
+    const i = rest.indexOf('-');
+    const owner = i >= 0 ? rest.slice(0, i) : rest;
+    const repo = i >= 0 ? rest.slice(i + 1) : '';
+    return { name: repo ? `${owner}/${repo}` : owner, url: repo ? `https://github.com/${owner}/${repo}` : '' };
+  }
+  return { name: id, url: '' };
+}
+function prettyItemName(id) {
+  const it = S.itemMap.get(id);
+  return it ? (it.name || it.id) : parseGhId(id).name;
+}
+
 function colItemHtml(presetId, id) {
   const i = S.itemMap.get(id);
   if (!i) {
+    const g = parseGhId(id);
     return `<div class="col-item missing">
       <button class="icon-btn col-remove" title="Remove" data-action="col-remove" data-preset="${esc(presetId)}" data-id="${esc(id)}">×</button>
-      <span class="warn">⚠ Missing</span> <code>${esc(id)}</code>
+      <div class="item-top"><span class="item-name">${esc(g.name)}</span><span class="badge warn">⚠ not in fridge</span></div>
+      <div class="row-end" style="margin-top:6px">
+        <button class="btn btn-sm" data-action="restore-missing" data-id="${esc(id)}">🧊 Add to refrigerator</button>
+      </div>
     </div>`;
   }
   return `<div class="col-item dnd-item" draggable="true" data-id="${esc(id)}" data-source="${esc(presetId)}">
@@ -1495,7 +1547,7 @@ function renderApplySummary() {
     const i = S.itemMap.get(id);
     return i
       ? `<span class="sum-chip">${badge(i.type)} ${esc(i.name || id)}</span>`
-      : `<span class="sum-chip missing">⚠ Missing: ${esc(id)}</span>`;
+      : `<span class="sum-chip missing">⚠ Missing: ${esc(prettyItemName(id))}</span>`;
   }).join('');
   el.innerHTML = `${p.description ? `<div class="muted small" style="margin-top:8px">${esc(p.description)}</div>` : ''}
     <div class="sum-chips">${chips || '<span class="muted small">No items — add ingredients in the builder</span>'}</div>`;
@@ -1816,7 +1868,9 @@ function initEvents() {
         case 'session-rename': renameRunningSession(el.dataset.pid, el.dataset.label); break;
         case 'quick-session': quickSession(el.dataset.preset, el); break;
         case 'quick-global': globalApplyFlow(el.dataset.preset, el); break;
-        case 'open-custom-modal': showModal('customModal'); $('#cmName').focus(); break;
+        case 'open-custom-modal': pendingCustomId = null; showModal('customModal'); $('#cmName').focus(); break;
+        case 'restore-missing': restoreMissing(el.dataset.id); break;
+        case 'open-app': openAsApp(el); break;
         case 'custom-submit': submitCustom(); break;
         case 'modal-close': hideModal(el.dataset.modal); break;
         case 'toggle-cat': {
