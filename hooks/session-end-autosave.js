@@ -1,21 +1,22 @@
 #!/usr/bin/env node
 // AI Refrigerator — Claude Code SessionEnd hook.
-// Reads the hook JSON on stdin and tells the local AI Refrigerator server that a
-// session ended, so it can auto-save (or queue) it per the user's setting.
-// Best-effort and silent: if the server isn't running, it just exits 0.
+// Durably records the ended session to an on-device inbox file. The app absorbs
+// it on its next start (or when the dashboard loads), so nothing is lost even if
+// the server was closed — and there is no dependency on a fixed server port.
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+
 let raw = '';
 process.stdin.on('data', (c) => (raw += c));
-process.stdin.on('end', async () => {
+process.stdin.on('end', () => {
   let d = {};
   try { d = JSON.parse(raw || '{}'); } catch {}
-  const port = process.env.AI_REFRIGERATOR_PORT || 4924;
-  const body = JSON.stringify({ sessionId: d.session_id || '', cwd: d.cwd || '' });
   try {
-    await fetch(`http://127.0.0.1:${port}/api/sessions/ended`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body,
-    });
+    const dir = path.join(os.homedir(), '.ai-refrigerator', 'data');
+    fs.mkdirSync(dir, { recursive: true });
+    const line = JSON.stringify({ sessionId: d.session_id || '', cwd: d.cwd || '', endedAt: new Date().toISOString() }) + '\n';
+    fs.appendFileSync(path.join(dir, 'ended-inbox.jsonl'), line);
   } catch {}
   process.exit(0);
 });
