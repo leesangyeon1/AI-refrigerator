@@ -9,18 +9,31 @@ import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC_DIR = path.join(__dirname, 'public');
-const DATA_DIR = path.join(__dirname, 'data');
-const PRESETS_DIR = path.join(__dirname, 'presets');
-const CATALOG_PATH = path.join(DATA_DIR, 'catalog.json');
-const CUSTOM_PATH = path.join(DATA_DIR, 'custom-items.json');
-const CONFIG_PATH = path.join(DATA_DIR, 'config.json');
-const STATE_PATH = path.join(DATA_DIR, 'state.json');
-const SESSIONS_PATH = path.join(DATA_DIR, 'sessions.json');
+// Bundled, read-only app data that ships in the repo (safe to update via git).
+const BUILTIN_DATA_DIR = path.join(__dirname, 'data');
+const CATALOG_PATH = path.join(BUILTIN_DATA_DIR, 'catalog.json'); // built-in catalog
+const SEED_PRESETS_DIR = path.join(__dirname, 'presets');         // sample presets → seed a new user
+
+// ALL user data lives on-device under ~/.ai-refrigerator so `git push`/`pull`
+// never touches it. Presets, custom ingredients, saved sessions, config & state
+// stay local to this machine; each user gets their own private refrigerator.
+const USER_DIR = path.join(os.homedir(), '.ai-refrigerator');
+const USER_DATA_DIR = path.join(USER_DIR, 'data');
+const PRESETS_DIR = path.join(USER_DIR, 'presets');
+// Self-describing store manifest — lets the app recognise & migrate an existing
+// on-device store when re-installed after the project folder was deleted.
+const STORE_MANIFEST_PATH = path.join(USER_DIR, 'store.json');
+const STORE_VERSION = 1;
+const APP_VERSION = '1.1.0';
+const CUSTOM_PATH = path.join(USER_DATA_DIR, 'custom-items.json');
+const CONFIG_PATH = path.join(USER_DATA_DIR, 'config.json');
+const STATE_PATH = path.join(USER_DATA_DIR, 'state.json');
+const SESSIONS_PATH = path.join(USER_DATA_DIR, 'sessions.json');
 // Claude Code's own per-session store: ~/.claude/sessions/<pid>.json holds the
 // { pid, sessionId, cwd, name, … } that `/rename` writes to. We read/write the
 // same file so a name set here shows up in Claude Code and vice-versa.
 const CLAUDE_SESSIONS_DIR = path.join(os.homedir(), '.claude', 'sessions');
-const SESSION_DIR = path.join(os.homedir(), '.ai-refrigerator', 'session-presets');
+const SESSION_DIR = path.join(USER_DIR, 'session-presets');
 
 const MAX_BODY = 2 * 1024 * 1024;
 const ID_RE = /^[a-z0-9-]{1,64}$/;
@@ -1335,6 +1348,85 @@ async function handleSessionLabel(req, res) {
   ok(res, { pid, name: label || null });
 }
 
+// Open a standalone desktop app window (Chromium --app) pointing at this server,
+// so the app can be used as an application in addition to a plain browser tab.
+async function handleOpenApp(res) {
+  if (process.platform !== 'darwin') return ok(res, { opened: false });
+  openAppWindow(`http://127.0.0.1:${PORT}`);
+  ok(res, { opened: true });
+}
+
+// ── Store (on-device data): info · backup · restore ───────
+async function loadAllPresets() {
+  let files = [];
+  try { files = (await fsp.readdir(PRESETS_DIR)).filter((f) => f.endsWith('.json')); } catch {}
+  const out = [];
+  for (const f of files) {
+    const p = await readJsonOrNull(path.join(PRESETS_DIR, f));
+    if (p && p.id) out.push(p);
+  }
+  return out;
+}
+async function handleStoreInfo(res) {
+  const manifest = (await readJsonOrNull(STORE_MANIFEST_PATH)) || {};
+  const presets = await loadAllPresets();
+  const custom = (await readJsonOrNull(CUSTOM_PATH)) || [];
+  const sessions = await loadSavedSessions();
+  ok(res, {
+    dir: USER_DIR,
+    storeVersion: manifest.storeVersion || STORE_VERSION,
+    appVersion: manifest.appVersion || APP_VERSION,
+    createdAt: manifest.createdAt || null,
+    updatedAt: manifest.updatedAt || null,
+    counts: { presets: presets.length, customItems: Array.isArray(custom) ? custom.length : 0, sessions: sessions.length },
+  });
+}
+// Download the whole on-device store as one portable file — so it can be reused
+// after deleting/reinstalling the app, or moved to another machine.
+async function handleStoreExport(res) {
+  const bundle = {
+    _bundle: 'ai-refrigerator',
+    version: STORE_VERSION,
+    appVersion: APP_VERSION,
+    exportedAt: new Date().toISOString(),
+    presets: await loadAllPresets(),
+    customItems: (await readJsonOrNull(CUSTOM_PATH)) || [],
+    sessions: await loadSavedSessions(),
+  };
+  res.writeHead(200, {
+    'Content-Type': 'application/json; charset=utf-8',
+    'Content-Disposition': 'attachment; filename="ai-refrigerator-backup.json"',
+  });
+  res.end(JSON.stringify(bundle, null, 2));
+}
+async function handleStoreImport(req, res) {
+  const body = await readJsonBody(req);
+  if (!body || body._bundle !== 'ai-refrigerator') return fail(res, 400, 'Not an AI Refrigerator backup file');
+  let presetsAdded = 0, itemsAdded = 0, sessionsAdded = 0;
+  for (const p of Array.isArray(body.presets) ? body.presets : []) {
+    if (!p || !ID_RE.test(String(p.id || '')) || !Array.isArray(p.items)) continue;
+    await writeJsonFile(path.join(PRESETS_DIR, p.id + '.json'), p);
+    presetsAdded++;
+  }
+  if (Array.isArray(body.customItems) && body.customItems.length) {
+    const cur = (await readJsonOrNull(CUSTOM_PATH)) || [];
+    const byId = new Map((Array.isArray(cur) ? cur : []).map((i) => [i.id, i]));
+    for (const it of body.customItems) {
+      if (it && it.id && !byId.has(it.id)) { byId.set(it.id, it); itemsAdded++; }
+    }
+    await writeJsonFile(CUSTOM_PATH, [...byId.values()]);
+  }
+  if (Array.isArray(body.sessions) && body.sessions.length) {
+    const cur = await loadSavedSessions();
+    const ids = new Set(cur.map((s) => s.id));
+    for (const s of body.sessions) {
+      if (s && s.id && !ids.has(s.id)) { cur.push(s); ids.add(s.id); sessionsAdded++; }
+    }
+    await writeJsonFile(SESSIONS_PATH, cur);
+  }
+  ok(res, { presetsAdded, itemsAdded, sessionsAdded });
+}
+
 // ── Static files ──────────────────────────────────────────
 async function serveStatic(res, pathname) {
   let p;
@@ -1446,14 +1538,49 @@ async function handle(req, res) {
   }
   if (method === 'POST' && pathname === '/api/sessions/resume') return handleSessionResume(req, res);
   if (method === 'POST' && pathname === '/api/sessions/label') return handleSessionLabel(req, res);
+  if (method === 'POST' && pathname === '/api/open-app') return handleOpenApp(res);
+  if (method === 'GET' && pathname === '/api/store') return handleStoreInfo(res);
+  if (method === 'GET' && pathname === '/api/store/export') return handleStoreExport(res);
+  if (method === 'POST' && pathname === '/api/store/import') return handleStoreImport(req, res);
 
   fail(res, 404, 'The requested API path was not found');
 }
 
 // ── Initialization & startup ──────────────────────────────
 async function ensureRuntimeFiles() {
-  await fsp.mkdir(DATA_DIR, { recursive: true });
+  await fsp.mkdir(USER_DATA_DIR, { recursive: true });
   await fsp.mkdir(PRESETS_DIR, { recursive: true });
+  await fsp.mkdir(SESSION_DIR, { recursive: true });
+
+  const copyIfMissing = async (src, dst) => {
+    if (await exists(dst)) return;
+    const raw = await readFileOrNull(src);
+    if (raw != null) await fsp.writeFile(dst, raw);
+  };
+
+  // One-time migration: move any data that used to live in the repo (older
+  // versions) to the on-device user dir, so upgrading users keep their data.
+  const OLD_DATA = path.join(__dirname, 'data');
+  for (const [name, dst] of [
+    ['custom-items.json', CUSTOM_PATH],
+    ['config.json', CONFIG_PATH],
+    ['state.json', STATE_PATH],
+    ['sessions.json', SESSIONS_PATH],
+  ]) {
+    await copyIfMissing(path.join(OLD_DATA, name), dst);
+  }
+
+  // Seed presets from the bundled samples on first run only (also migrates presets
+  // that used to live in the repo). After that, the user's presets are never
+  // overwritten — updating the app via git never changes on-device presets.
+  let userPresets = [];
+  try { userPresets = (await fsp.readdir(PRESETS_DIR)).filter((f) => f.endsWith('.json')); } catch {}
+  if (!userPresets.length) {
+    let seeds = [];
+    try { seeds = (await fsp.readdir(SEED_PRESETS_DIR)).filter((f) => f.endsWith('.json')); } catch {}
+    for (const f of seeds) await copyIfMissing(path.join(SEED_PRESETS_DIR, f), path.join(PRESETS_DIR, f));
+  }
+
   const defaults = [
     [CONFIG_PATH, DEFAULT_CONFIG],
     [STATE_PATH, DEFAULT_STATE],
@@ -1463,6 +1590,16 @@ async function ensureRuntimeFiles() {
   for (const [p, def] of defaults) {
     if (!(await exists(p))) await writeJsonFile(p, def);
   }
+
+  // Write/refresh the store manifest so the on-device store is self-describing.
+  const prev = await readJsonOrNull(STORE_MANIFEST_PATH);
+  await writeJsonFile(STORE_MANIFEST_PATH, {
+    store: 'ai-refrigerator',
+    storeVersion: STORE_VERSION,
+    appVersion: APP_VERSION,
+    createdAt: (prev && prev.createdAt) || new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  });
 }
 
 await ensureRuntimeFiles();

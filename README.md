@@ -54,13 +54,23 @@ Both start the local server (if not already running) and open a dedicated app wi
 - Optional: `claude` CLI — needed for Global apply mode and AI recommendations
 - Optional: GitHub token — eases search rate limits (enter it in the Settings tab)
 
-## 🔗 Sharing Preset JSON
+## 💾 Where your data lives (on-device)
 
-A preset is a single file at `presets/<id>.json`. Sharing is simple.
+Every user gets their own **private, on-device refrigerator**. All user data is stored under **`~/.ai-refrigerator/`** and is **never committed or pushed** — so `git pull`/`git push` updates the app without ever touching or overwriting your presets and sessions:
+
+- `~/.ai-refrigerator/presets/` — your presets (recipes)
+- `~/.ai-refrigerator/data/` — custom ingredients, saved sessions, settings, apply history
+- `~/.ai-refrigerator/session-presets/` — generated session config files
+
+What ships **in the repo** is only the read-only defaults used to **seed a fresh install**: the sample presets in `presets/` and the built-in catalog `data/catalog.json`. On first run they're copied into `~/.ai-refrigerator/`; after that, updating the app never changes your on-device data.
+
+**Delete-proof.** Because your data lives outside the project folder, you can delete the whole repo, re-clone it later, and your presets/sessions/custom items are still there — the app detects the existing store (via `~/.ai-refrigerator/store.json`) and reuses it instead of reseeding. For extra safety, **Settings → Backup & Restore** exports your entire store as one file and restores it (e.g. onto another machine).
+
+## 🔗 Sharing Preset JSON
 
 1. **Export**: Use `Export JSON` from the column menu in the Preset Builder, or download the `preset.json` format from the `Apply & Export` tab.
 2. **Send**: Share the file via Slack/Gist/PR, etc.
-3. **Import**: The recipient selects it via `Import JSON` in the Preset Builder, or drops the file into their own `presets/` folder and refreshes.
+3. **Import**: The recipient selects it via `Import JSON` in the Preset Builder.
 
 Six sample presets are included by default: 🎨 Frontend React · ⚙️ Backend API · 🪙 Token Saver · ☁️ Cloudflare Edge · 🔬 Research & Automation · 💬 Messaging Assistant.
 
