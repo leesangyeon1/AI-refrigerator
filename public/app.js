@@ -439,7 +439,7 @@ async function renderSessions() {
       : `<div class="muted small">No plugins/skills/MCP detected active for this session.</div>`}
       <div class="row-end" style="margin-top:8px;gap:6px">
         <button class="btn btn-sm" data-action="apply-preset-session" data-cwd="${esc(s.cwd || '')}" data-sid="${esc(s.sessionId || '')}">🎯 Apply preset</button>
-        <button class="btn btn-sm" data-action="session-rename" data-sid="${esc(s.sessionId || '')}" data-label="${esc(s.customLabel || '')}">✎ Rename</button>
+        <button class="btn btn-sm" data-action="session-rename" data-pid="${esc(String(s.pid))}" data-label="${esc(s.customLabel || '')}">✎ Rename</button>
         <button class="btn btn-sm btn-primary" data-action="fridge-save" data-cwd="${esc(s.cwd || '')}" data-preset="${esc(presetId)}" data-name="${esc(defName)}" data-sid="${esc(s.sessionId || '')}">🧊 Save to fridge</button>
       </div>
     </div>`;
@@ -586,14 +586,15 @@ async function pickPresetForRunning(anchor, cwd, sid) {
   if (v) applyPresetToSession(v, { cwd: cwd || undefined, sessionId: sid || undefined });
 }
 
-// Label / rename ONE session by its UUID (like Claude Code's /rename).
-async function renameRunningSession(sessionId, current) {
-  if (!sessionId) { toast("This session couldn't be identified, so it can't be renamed", 'error'); return; }
-  const name = await openPrompt({ title: 'Rename session', label: 'Session label', value: current || '' });
+// Rename ONE session by writing Claude Code's own session file (same as /rename),
+// so the name syncs with Claude Code in both directions.
+async function renameRunningSession(pid, current) {
+  if (!pid) { toast("This session couldn't be identified, so it can't be renamed", 'error'); return; }
+  const name = await openPrompt({ title: 'Rename session', label: 'Session name', value: current || '' });
   if (name === null) return;
   try {
-    await api('/api/sessions/label', { method: 'POST', body: { sessionId, label: name.trim() } });
-    toast(name.trim() ? '✎ Session renamed' : 'Label cleared');
+    await api('/api/sessions/label', { method: 'POST', body: { pid, label: name.trim() } });
+    toast(name.trim() ? '✎ Session renamed (synced with Claude Code)' : 'Name cleared');
     renderSessions();
   } catch { /* toast handled */ }
 }
@@ -1812,7 +1813,7 @@ function initEvents() {
         case 'fridge-rename': renameSaved(el.dataset.id); break;
         case 'fridge-delete': deleteSaved(el.dataset.id); break;
         case 'apply-preset-session': pickPresetForRunning(el, el.dataset.cwd, el.dataset.sid); break;
-        case 'session-rename': renameRunningSession(el.dataset.sid, el.dataset.label); break;
+        case 'session-rename': renameRunningSession(el.dataset.pid, el.dataset.label); break;
         case 'quick-session': quickSession(el.dataset.preset, el); break;
         case 'quick-global': globalApplyFlow(el.dataset.preset, el); break;
         case 'open-custom-modal': showModal('customModal'); $('#cmName').focus(); break;
