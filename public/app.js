@@ -1855,7 +1855,44 @@ function renderSettings() {
   $('#cfgAiCmd').value = (c && c.aiCommand) || 'claude';
   $('#cfgAiArgs').value = c && Array.isArray(c.aiArgs) ? c.aiArgs.join(' ') : '-p';
   $('#cfgProjPath').value = (c && c.defaultProjectPath) || '';
+  const mode = (c && c.autoSaveMode) || 'off';
+  $('#cfgAutoSave').value = mode;
+  $('#autoSaveHookState').textContent = mode === 'off'
+    ? 'Off — sessions are saved only when you click Save to fridge.'
+    : (mode === 'always' ? 'On: ended sessions are saved automatically.' : 'On: you\'ll be asked to save ended sessions when you open the app.');
   loadStoreInfo();
+}
+
+// Change the auto-save mode: persist it and install/remove the Claude Code hook.
+async function setAutoSaveMode(mode) {
+  try {
+    S.config = await api('/api/config', { method: 'POST', body: { autoSaveMode: mode } });
+    await api('/api/autosave/install-hook', { method: 'POST', body: { enable: mode !== 'off' } });
+    toast(mode === 'off' ? 'Auto-save turned off' : `Auto-save: ${mode} — SessionEnd hook installed`);
+    renderSettings();
+  } catch { renderSettings(); }
+}
+
+// On app open (Ask mode): offer to save sessions that ended while the app was closed.
+async function checkPendingSessions() {
+  let pending = [];
+  try { pending = await api('/api/sessions/pending', { silent: true }); } catch { return; }
+  if (!Array.isArray(pending) || !pending.length) return;
+  const names = pending.map(p => `<li>${esc(p.name)}${p.cwd ? ` <span class="muted small">${esc(p.cwd)}</span>` : ''}</li>`).join('');
+  const ok = await openConfirm({
+    title: `🧊 ${pending.length} ended session(s)`,
+    bodyHtml: `<p>These Claude Code sessions ended since you last opened the app. Save them to the fridge?</p><ul class="plan-list">${names}</ul>`,
+    okText: 'Save all',
+  });
+  try {
+    if (ok) {
+      const r = await api('/api/sessions/pending/save', { method: 'POST', body: {} });
+      toast(`🧊 Saved ${r.saved} session(s) to the fridge`);
+      if (S.ui.view === 'dashboard' || S.ui.view === 'saved') renderView(S.ui.view);
+    } else {
+      await api('/api/sessions/pending/dismiss', { method: 'POST', body: {} });
+    }
+  } catch { /* toast handled */ }
 }
 
 async function loadStoreInfo() {
@@ -2078,6 +2115,7 @@ function initEvents() {
     e.target.value = '';
     if (f) restoreFromBackup(f);
   });
+  $('#cfgAutoSave').addEventListener('change', e => setAutoSaveMode(e.target.value));
 
   window.addEventListener('hashchange', route);
   initDnd();
@@ -2110,6 +2148,7 @@ async function init() {
 
   if (!location.hash) history.replaceState(null, '', '#dashboard');
   route();
+  if (S.config && S.config.autoSaveMode === 'ask') checkPendingSessions();
 }
 
 init();

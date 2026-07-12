@@ -195,6 +195,17 @@
         <div class="row-end"><button class="btn btn-primary" data-action="save-config">Save</button></div>
       </div>
       <div class="panel">
+        <div class="panel-head"><h2>💾 Auto-save sessions</h2></div>
+        <p class="muted small">When a Claude Code session ends, automatically put it in the fridge. Enabling this installs a Claude Code <code>SessionEnd</code> hook.</p>
+        <label class="field-label" for="cfgAutoSave">On session end</label>
+        <select class="input" id="cfgAutoSave">
+          <option value="off">Off — save manually only</option>
+          <option value="ask">Ask — prompt me next time I open the app</option>
+          <option value="always">Always — save automatically</option>
+        </select>
+        <div class="muted small" id="autoSaveHookState" style="margin-top:6px"></div>
+      </div>
+      <div class="panel">
         <div class="panel-head"><h2>🖥️ Run modes</h2></div>
         <p class="muted small">Two ways to use AI Refrigerator:</p>
         <ul class="data-loc">
