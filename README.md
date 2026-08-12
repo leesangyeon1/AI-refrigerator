@@ -46,7 +46,8 @@ Both start the local server (if not already running) and open a dedicated app wi
 3. **🍳 Preset Builder** — Combine ingredients into presets via drag & drop. Cards wrap onto new rows (no sideways scrolling). 1-second debounced auto-save, JSON import/export, and duplication.
 4. **🔍 GitHub · SkillsMP · 🤖 AI Recommendations** — Marketplace-style discovery: sort GitHub results by **Stars / Forks / Updated** across **Day / Week / Month / All time**. AI recommendations auto-detect and use whichever AI CLI you have installed (Claude Code, Codex, Gemini, Cursor, Grok, OpenCode, Qwen) — pick one explicitly or let it auto-detect.
 5. **🚀 3 Apply Modes** — 🎯 Session (changes nothing permanently) / 📁 Project (generates `.claude/settings.json`, `.mcp.json`, and `CLAUDE.md`, with dryRun preview and automatic backups) / 🌍 Global (enable/disable plugins, confirmation modal required).
-6. **📦 Export** — Copy or download in 5 formats: `install.sh` / `settings.json` / `mcp.json` / `CLAUDE.md` / `preset.json`.
+6. **🧠 Skill Orchestrator** — In `Apply & Export`, run a preset through your AI CLI to get a context-optimization report: skill conflicts with severity (e.g. exhaustive docs vs. token minimalism), heavy skills routed to on-demand tools, and a 3-layer system prompt (persona · workflow · output filter) you can copy into a session.
+7. **📦 Export** — Copy or download in 5 formats: `install.sh` / `settings.json` / `mcp.json` / `CLAUDE.md` / `preset.json`.
 
 ## 📋 Requirements
 

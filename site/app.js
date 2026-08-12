@@ -77,6 +77,7 @@ const S = {
       projectPath: '', projectPlan: null, projectResult: null,
       globalPlan: null, globalResult: null,
       fmt: 'install.sh', exportText: '',
+      orc: null, orcLoading: false, orcScope: '',
     },
   },
 };
@@ -483,6 +484,7 @@ async function renderFridge() {
   el.innerHTML = S.saved.map(s => {
     const b = s.breakdown || {};
     const preset = s.presetId ? S.presets.find(p => p.id === s.presetId) : null;
+    const ing = sessionIngredients(s);
     const presetLabel = s.presetId ? (preset ? `${preset.emoji || '🍳'} ${preset.name}` : `${s.presetId} (deleted)`) : 'No preset';
     return `<div class="item-card sess-drop" style="margin-bottom:8px" data-saved="${esc(s.id)}">
       <div class="item-top">
@@ -492,10 +494,12 @@ async function renderFridge() {
       <div class="kv"><span class="k">Folder</span><span class="muted small">${esc(s.cwd || '—')}</span></div>
       <div class="kv"><span class="k">Resume</span><span class="muted small">${s.sessionId ? esc(s.sessionId.slice(0, 12)) + '…' : 'new session'}</span></div>
       <div class="kv"><span class="k">Preset</span><span>${esc(presetLabel)}</span></div>
+      <div class="ov-row-wrap">${overlapChips(ing.ids, s.id)}${coverageNote(ing)}</div>
       <div class="sum-chips">${chip('Plugin', b.plugin, 'type-plugin')}${chip('MCP', b.mcp, 'type-mcp')}${chip('Skill', b.skill, 'type-skill')}${chip('Agent', b.agent, 'type-agent')}${chip('CLAUDE.md', b.md, 'type-md')}</div>
       <div class="row-end" style="margin-top:8px;gap:6px">
         <button class="btn btn-sm btn-primary" data-action="fridge-resume" data-id="${esc(s.id)}">▶ Resume</button>
         <button class="btn btn-sm" data-action="fridge-apply" data-id="${esc(s.id)}">🎯 Preset</button>
+        <button class="btn btn-sm" data-action="fridge-orchestrate" data-id="${esc(s.id)}"${preset ? '' : ' disabled title="Attach a preset to this session first"'}>🧠 Orchestrate</button>
         <button class="btn btn-sm" data-action="fridge-rename" data-id="${esc(s.id)}">✎ Rename</button>
         <button class="btn btn-sm btn-red" data-action="fridge-delete" data-id="${esc(s.id)}">🗑</button>
       </div>
@@ -521,6 +525,7 @@ async function renderSavedSessions() {
   el.innerHTML = S.saved.map(s => {
     const b = s.breakdown || {};
     const preset = s.presetId ? S.presets.find(p => p.id === s.presetId) : null;
+    const ing = sessionIngredients(s);
     const presetLabel = s.presetId ? (preset ? `${preset.emoji || '🍳'} ${preset.name}` : `${esc(s.presetId)} (deleted)`) : 'No preset';
     return `<div class="item-card sess-drop" style="margin-bottom:10px" data-saved="${esc(s.id)}">
       <div class="item-top">
@@ -532,11 +537,13 @@ async function renderSavedSessions() {
       <div class="kv"><span class="k">Folder</span><span class="muted small">${esc(s.cwd || '—')}</span></div>
       <div class="kv"><span class="k">Resume ID</span><span class="muted small">${s.sessionId ? esc(s.sessionId) : 'new session'}</span></div>
       <div class="kv"><span class="k">Preset</span><span>${presetLabel}</span></div>
+      <div class="ov-row-wrap">${overlapChips(ing.ids, s.id)}${coverageNote(ing)}</div>
       <div class="sum-chips">${chip('Plugin', b.plugin, 'type-plugin')}${chip('MCP', b.mcp, 'type-mcp')}${chip('Skill', b.skill, 'type-skill')}${chip('Agent', b.agent, 'type-agent')}${chip('CLAUDE.md', b.md, 'type-md')}${chip('Tool', b.tool, 'type-tool')}${chip('CLI', b.cli, 'type-cli')}</div>
       ${line('Plugins', b.plugin)}${line('MCP', b.mcp)}${line('Skills', b.skill)}${line('Agents', b.agent)}
       <div class="row-end" style="margin-top:8px;gap:6px">
         <button class="btn btn-sm btn-primary" data-action="fridge-resume" data-id="${esc(s.id)}">▶ Resume</button>
         <button class="btn btn-sm" data-action="fridge-apply" data-id="${esc(s.id)}">🎯 Preset</button>
+        <button class="btn btn-sm" data-action="fridge-orchestrate" data-id="${esc(s.id)}"${preset ? '' : ' disabled title="Attach a preset to this session first"'}>🧠 Orchestrate</button>
         <button class="btn btn-sm" data-action="fridge-rename" data-id="${esc(s.id)}">✎ Rename</button>
         <button class="btn btn-sm btn-red" data-action="fridge-delete" data-id="${esc(s.id)}">🗑</button>
       </div>
@@ -894,10 +901,111 @@ function miniCard(i) {
   </div>`;
 }
 
+/* ===== Tag-overlap precheck (mirrors tagCollisions() in server.js, no AI call) ===== */
+// Ingredients sharing a tag occupy the same functional niche — conflict suspects.
+// Cuts across types: a skill, a plugin and an MCP server can all be "token" tools.
+function tagOverlaps(itemIds) {
+  const byTag = new Map();
+  for (const id of itemIds || []) {
+    const it = S.itemMap.get(id);
+    for (const raw of (it && Array.isArray(it.tags)) ? it.tags : []) {
+      const tag = String(raw).trim().toLowerCase();
+      if (!tag) continue;
+      if (!byTag.has(tag)) byTag.set(tag, []);
+      byTag.get(tag).push(it);
+    }
+  }
+  return [...byTag]
+    .filter(([, members]) => members.length > 1)
+    .map(([tag, members]) => ({ tag, members }))
+    .sort((a, b) => b.members.length - a.members.length);
+}
+
+// What a group of same-tag ingredients probably needs. Same kind = duplicated
+// mechanism; mixed kinds = complementary pieces that just need ordering.
+function overlapAdvice(g) {
+  const types = [...new Set(g.members.map(m => m.type || 'item'))];
+  if (types.length === 1) {
+    return `${g.members.length} × ${TYPE_FULL[types[0]] || types[0]} doing the same job — likely duplicate mechanism. Keep the strongest one globally active and route the rest on demand.`;
+  }
+  return `Different kinds (${types.map(t => TYPE_LABELS[t] || t).join(' + ')}) in one niche — likely complementary. Layer them instead: identity → Layer 1, workflow → Layer 2, formatting → Layer 3.`;
+}
+
+// A chip for one tag group, with a hover card listing members + advice
+function ovChip(g) {
+  return `<span class="ov-chip">⚠ #${esc(g.tag)} ×${g.members.length}
+    <span class="ov-pop">
+      <span class="ov-pop-head">#${esc(g.tag)} — ${g.members.length} ingredients share this tag</span>
+      ${g.members.map(m => `<span class="ov-row">${badge(m.type)} ${esc(m.name || m.id)}</span>`).join('')}
+      <span class="ov-advice">💡 ${esc(overlapAdvice(g))}</span>
+      <span class="ov-foot">Run 🧠 Orchestrate to confirm and get the layered prompt.</span>
+    </span>
+  </span>`;
+}
+
+// One chip per overlapping tag. With a scope id, each chip gets an Organize button
+// so a clash can be resolved into layers straight from the card.
+function overlapChips(itemIds, savedId) {
+  return tagOverlaps(itemIds).map(g => ovChip(g) + (savedId
+    ? `<button class="btn btn-sm" data-action="organize" data-scope="saved" data-id="${esc(savedId)}" data-tag="${esc(g.tag)}" title="Keep all of them — get a layering that lets them coexist">🧩 Use both, organize</button>`
+    : '')).join('');
+}
+
+// Ingredients of a saved session: its preset when attached, else whatever the
+// session actually ran, matched back to catalog entries by id / plugin / name.
+// Variants fold onto their family ("caveman-review" → "caveman"), so a suite of
+// sub-skills counts once instead of pretending to be a crowd.
+// Returns the unique ids plus how many entries the fridge could not identify —
+// unchecked is not the same as clean, and the UI has to say which it is.
+function sessionIngredients(s) {
+  const preset = s.presetId ? S.presets.find(p => p.id === s.presetId) : null;
+  if (preset) return { ids: preset.items || [], checked: (preset.items || []).length, unresolved: [] };
+  const byKey = new Map();
+  for (const i of S.catalog) {
+    for (const k of [i.id, i.plugin, i.name]) if (k) byKey.set(String(k).toLowerCase(), i.id);
+  }
+  const ids = new Set();
+  const unresolved = [];
+  let checked = 0;
+  for (const raw of Object.values(s.breakdown || {}).flat()) {
+    const name = String(raw).toLowerCase();
+    const family = name.includes('-') ? name.slice(0, name.indexOf('-')) : '';
+    const hit = byKey.get(name) || (family ? byKey.get(family) : undefined);
+    if (hit) { ids.add(hit); checked++; }
+    else unresolved.push(String(raw));
+  }
+  return { ids: [...ids], checked, unresolved };
+}
+
+// "6 not in the fridge" — never let an unchecked session read as a clean one
+function coverageNote(info) {
+  if (!info.unresolved.length) return '';
+  return `<span class="ov-chip ov-chip-muted">? ${info.unresolved.length} unchecked
+    <span class="ov-pop">
+      <span class="ov-pop-head">${info.unresolved.length} entries aren't in the fridge</span>
+      ${info.unresolved.map(n => `<span class="ov-row">${esc(n)}</span>`).join('')}
+      <span class="ov-advice">💡 Overlap detection only sees catalog ingredients — these were skipped, not cleared. Add them as custom ingredients to include them.</span>
+    </span>
+  </span>`;
+}
+
+// id → tags it collides on, for per-item markers
+function overlapFlags(itemIds) {
+  const flags = new Map();
+  for (const g of tagOverlaps(itemIds)) {
+    for (const m of g.members) {
+      if (!flags.has(m.id)) flags.set(m.id, []);
+      flags.get(m.id).push(g.tag);
+    }
+  }
+  return flags;
+}
+
 function renderBuilderCols() {
   const el = $('#builderCols');
   let html = S.presets.map(p => {
     const items = p.items || [];
+    const flags = overlapFlags(items);
     const typeCount = {};
     items.forEach(id => {
       const i = S.itemMap.get(id);
@@ -913,9 +1021,9 @@ function renderBuilderCols() {
         <input class="name-input" data-field="name" data-preset="${esc(p.id)}" value="${esc(p.name || '')}" placeholder="Name">
         <button class="icon-btn" title="Menu" data-action="col-menu" data-preset="${esc(p.id)}">⋯</button>
       </div>
-      <div class="preset-col-stats">${stats}${missing ? `<span class="stat-chip warn">⚠ ${missing} missing</span>` : ''}</div>
+      <div class="preset-col-stats">${stats}${missing ? `<span class="stat-chip warn">⚠ ${missing} missing</span>` : ''}${overlapChips(items)}</div>
       <div class="drop-zone" data-preset="${esc(p.id)}">
-        ${items.length ? items.map(id => colItemHtml(p.id, id)).join('') : '<div class="drop-empty">Drag &amp; drop<br>ingredients here</div>'}
+        ${items.length ? clusteredItems(p.id, items, flags) : '<div class="drop-empty">Drag &amp; drop<br>ingredients here</div>'}
       </div>
     </div>`;
   }).join('');
@@ -940,7 +1048,25 @@ function prettyItemName(id) {
   return it ? (it.name || it.id) : parseGhId(id).name;
 }
 
-function colItemHtml(presetId, id) {
+// Overlapping ingredients render side by side inside a boxed group, so a clash is
+// visible as adjacency. Items enter a preset by append only, so display order is free.
+function clusteredItems(presetId, items, flags) {
+  const placed = new Set();
+  let html = '';
+  for (const g of tagOverlaps(items)) {
+    const ids = g.members.map(m => m.id).filter(id => !placed.has(id));
+    if (ids.length < 2) continue;
+    ids.forEach(id => placed.add(id));
+    html += `<div class="ov-group">
+      <div class="ov-group-head">${ovChip({ tag: g.tag, members: g.members.filter(m => ids.includes(m.id)) })}<span class="muted">same niche — hover for advice</span>
+        <button class="btn btn-sm" data-action="organize" data-scope="preset" data-preset="${esc(presetId)}" data-tag="${esc(g.tag)}" title="Keep all of them — get a layering that lets them coexist">🧩 Use both, organize</button></div>
+      <div class="ov-group-items">${ids.map(id => colItemHtml(presetId, id, flags)).join('')}</div>
+    </div>`;
+  }
+  return html + items.filter(id => !placed.has(id)).map(id => colItemHtml(presetId, id, flags)).join('');
+}
+
+function colItemHtml(presetId, id, flags) {
   const i = S.itemMap.get(id);
   if (!i) {
     const g = parseGhId(id);
@@ -952,10 +1078,12 @@ function colItemHtml(presetId, id) {
       </div>
     </div>`;
   }
-  return `<div class="col-item dnd-item" draggable="true" data-id="${esc(id)}" data-source="${esc(presetId)}">
+  const clash = (flags && flags.get(id)) || [];
+  return `<div class="col-item dnd-item${clash.length ? ' clash' : ''}" draggable="true" data-id="${esc(id)}" data-source="${esc(presetId)}">
     <button class="icon-btn col-remove" title="Remove" data-action="col-remove" data-preset="${esc(presetId)}" data-id="${esc(id)}">×</button>
     <div class="item-top"><span class="item-name">${esc(i.name || i.id)}</span>${badge(i.type)}</div>
     <div class="item-desc small">${esc(i.desc || '')}</div>
+    ${clash.length ? `<div class="clash-tags" title="Shares this tag with another ingredient in the preset — possible conflict">⚠ ${clash.map(t => `#${esc(t)}`).join(' ')}</div>` : ''}
   </div>`;
 }
 
@@ -1038,6 +1166,7 @@ async function colMenu(anchor, presetId) {
     anchor,
     options: [
       { label: '🎯 Apply to session', value: 'session' },
+      { label: '🧠 Orchestrate', value: 'orc' },
       { label: '🚀 Open in Apply & Export', value: 'apply' },
       { label: '📤 Export JSON', value: 'export' },
       { label: '📋 Duplicate', value: 'dup' },
@@ -1045,6 +1174,7 @@ async function colMenu(anchor, presetId) {
     ],
   });
   if (v === 'session') applyPresetToSessionChoose(anchor, presetId);
+  else if (v === 'orc') orchestratePreset(presetId);
   else if (v === 'apply') openInApply(presetId);
   else if (v === 'export') exportPresetJson(presetId);
   else if (v === 'dup') duplicatePreset(presetId);
@@ -1301,21 +1431,28 @@ async function loadAiClis() {
   renderAiClis();
 }
 
-function renderAiClis() {
-  const D = S.ui.discover;
-  const row = $('#aiCliRow');
-  const sel = $('#aiProvider');
-  if (!row || !sel) return;
-  const clis = D.clis || [];
-  const anyAvail = clis.some(c => c.available);
-  row.innerHTML = clis.length
-    ? clis.map(c => `<span class="ai-cli-pill ${c.available ? 'on' : ''}">${c.available ? '●' : '○'} ${esc(c.name)}</span>`).join('')
-      + (anyAvail ? '' : '<span class="ai-cli-pill">No AI CLI detected — install one or set it in Settings</span>')
-    : '';
+function fillCliSelect(sel, clis) {
+  if (!sel) return;
   const cur = sel.value;
   sel.innerHTML = '<option value="">Auto-detect</option>'
     + clis.filter(c => c.available).map(c => `<option value="${esc(c.id)}">${esc(c.name)}</option>`).join('');
-  sel.value = D.provider && clis.find(c => c.id === D.provider && c.available) ? D.provider : (cur || '');
+  const pref = S.ui.discover.provider;
+  sel.value = pref && clis.find(c => c.id === pref && c.available) ? pref : (cur || '');
+}
+
+function renderAiClis() {
+  const D = S.ui.discover;
+  const clis = D.clis || [];
+  const row = $('#aiCliRow');
+  if (row) {
+    const anyAvail = clis.some(c => c.available);
+    row.innerHTML = clis.length
+      ? clis.map(c => `<span class="ai-cli-pill ${c.available ? 'on' : ''}">${c.available ? '●' : '○'} ${esc(c.name)}</span>`).join('')
+        + (anyAvail ? '' : '<span class="ai-cli-pill">No AI CLI detected — install one or set it in Settings</span>')
+      : '';
+  }
+  fillCliSelect($('#aiProvider'), clis);
+  fillCliSelect($('#orcProvider'), clis);
 }
 
 function loadingBox(msg) {
@@ -1579,6 +1716,136 @@ function renderApply() {
   renderModePanel();
   renderFormatTabs();
   refreshExport();
+  loadAiClis();
+  renderOrchestrator();
+}
+
+/* ===== Skill Orchestrator ===== */
+// "I want to keep all of them" — organize one overlap group into coexisting layers
+// instead of dropping a member. Works from a preset or from a preset-less session.
+async function organizeOverlap(itemIds, focusTag, label) {
+  const A = S.ui.apply;
+  if (A.orcLoading) return;
+  if (!itemIds.length) { toast('Nothing to organize', 'error'); return; }
+  A.orc = null;
+  A.orcScope = `Keeping every #${focusTag} member together · ${label}`;
+  A.orcLoading = true;
+  if (S.ui.view !== 'apply') location.hash = '#apply';
+  renderOrchestrator();
+  try {
+    A.orc = await api('/api/orchestrate', { method: 'POST', body: { itemIds, focusTag } });
+  } catch { A.orcScope = ''; }
+  A.orcLoading = false;
+  renderOrchestrator();
+}
+
+// Entry point from the Preset menu and Saved Sessions: jump to the panel and run it
+function orchestratePreset(presetId) {
+  if (!S.presets.some(p => p.id === presetId)) { toast('That preset no longer exists', 'error'); return; }
+  openInApply(presetId);
+  S.ui.apply.orc = null;
+  renderApply();
+  orchestrate();
+}
+
+async function orchestrate() {
+  const A = S.ui.apply;
+  const p = currentApplyPreset();
+  if (!p) { toast('Select a preset first', 'error'); return; }
+  if (A.orcLoading) return;
+  A.orcScope = '';
+  A.orcLoading = true;
+  renderOrchestrator();
+  try {
+    A.orc = await api('/api/orchestrate', {
+      method: 'POST',
+      body: { presetId: p.id, provider: ($('#orcProvider') && $('#orcProvider').value) || '' },
+    });
+  } catch { /* toast handled, keep previous result */ }
+  A.orcLoading = false;
+  renderOrchestrator();
+}
+
+function orcSystemPrompt(o) {
+  const L = o.orchestration_plan.layered_system_prompt;
+  return [
+    '## Layer 1 — Core Persona', L.layer_1_core, '',
+    '## Layer 2 — Execution Workflow', L.layer_2_workflow, '',
+    '## Layer 3 — Output Post-Processor', L.layer_3_output_formatter, '',
+  ].join('\n');
+}
+
+function renderOrchestrator() {
+  const el = $('#orcResults');
+  if (!el) return;
+  const A = S.ui.apply;
+  const btn = $('#orcBtn');
+  if (btn) btn.disabled = A.orcLoading || !currentApplyPreset();
+  if (A.orcLoading) { el.innerHTML = loadingBox(A.orcScope ? `${A.orcScope} — building the layering… (up to 2-3 min)` : 'Deconflicting the preset with your AI CLI… (up to 2-3 min)'); return; }
+  if (!A.orc) {
+    el.innerHTML = '<div class="empty-state">🧠 Run the orchestrator to see skill conflicts, on-demand tools, and the 3-layer system prompt.</div>';
+    return;
+  }
+  const o = A.orc.orchestration;
+  const L = o.orchestration_plan.layered_system_prompt;
+  const tools = o.orchestration_plan.mcp_tools;
+  const conflicts = o.conflict_analysis;
+  const used = A.orc.usedCli;
+
+  let html = `<div class="result-box ok" style="margin-top:12px">
+    ${A.orcScope ? `<div class="kv"><span class="k">Mode</span><span>🧩 ${esc(A.orcScope)}</span></div>` : ''}
+    <div class="kv"><span class="k">Analyzed</span><span>${esc(String(A.orc.skillCount || 0))} ingredient(s)${used && used.name ? ` · 🤖 ${esc(used.name)}` : ''}</span></div>
+    <div class="kv"><span class="k">Token cut</span><span>≈ ${esc(String(o.metrics.estimated_input_token_reduction_pct))}% of the input context</span></div>
+    ${o.metrics.architectural_efficiency_reasoning ? `<div class="ai-reason">💡 ${esc(o.metrics.architectural_efficiency_reasoning)}</div>` : ''}
+  </div>`;
+
+  const suspects = A.orc.suspects || [];
+  if (suspects.length) {
+    const named = conflicts.flatMap(c => c.skills_involved.map(n => n.toLowerCase()));
+    html += `<h4 style="margin:16px 0 8px">🔎 Tag overlaps — precheck (${suspects.length})</h4>
+      <p class="muted small">Computed from shared tags before the AI ran. Same tag = same niche, across skills, plugins, MCP servers and tools.</p>`;
+    html += suspects.map(g => {
+      const hits = g.members.filter(m => named.some(n => n.includes(m.name.toLowerCase()))).length;
+      const flagged = hits >= 2;
+      return `<div class="result-box">
+        <div class="item-top">
+          <span class="item-name">#${esc(g.tag)}</span>
+          <span class="badge ${flagged ? 'sev-HIGH' : 'sev-LOW'}">${flagged ? 'conflict raised' : 'layered, no conflict'}</span>
+        </div>
+        <div class="sum-chips">${g.members.map(m => `<span class="sum-chip">${badge(m.type)} ${esc(m.name)}</span>`).join('')}</div>
+      </div>`;
+    }).join('');
+  }
+
+  html += `<h4 style="margin:16px 0 8px">⚠️ Conflicts (${conflicts.length})</h4>`;
+  html += conflicts.length ? conflicts.map(c => `<div class="result-box">
+      <div class="item-top">
+        <span class="item-name">${esc(c.skills_involved.join(' ✕ ') || 'Unnamed conflict')}</span>
+        <span class="badge sev-${esc(c.severity)}">${esc(c.severity)}</span>
+      </div>
+      <div class="item-desc">${esc(c.issue)}</div>
+      <div class="ai-reason">🛠 ${esc(c.resolution_strategy)}</div>
+    </div>`).join('') : '<div class="empty-state">No conflicts detected between these ingredients.</div>';
+
+  html += `<h4 style="margin:16px 0 8px">🧩 Layered system prompt</h4>
+    <div class="code-wrap"><pre class="code-view small">${esc(orcSystemPrompt(o))}</pre></div>
+    <div class="row-end" style="margin-top:8px">
+      <button class="btn btn-sm" data-action="orc-copy" data-what="prompt">📋 Copy system prompt</button>
+    </div>`;
+  if (!L.layer_1_core && !L.layer_2_workflow && !L.layer_3_output_formatter) {
+    html += '<div class="warn-box">⚠️ The AI returned no layers. Try again or pick a different AI CLI.</div>';
+  }
+
+  html += `<h4 style="margin:16px 0 8px">🔌 On-demand tools (${tools.length})</h4>`;
+  html += tools.length ? tools.map(t => `<div class="result-box">
+      <div class="item-top"><span class="item-name">${esc(t.name)}</span><span class="badge type-mcp">Tool</span></div>
+      <div class="item-desc">${esc(t.description)}</div>
+      ${t.dynamic_injected_prompt ? `<div class="code-wrap"><pre class="code-view small">${esc(t.dynamic_injected_prompt)}</pre></div>` : ''}
+    </div>`).join('')
+    + `<div class="row-end" style="margin-top:8px"><button class="btn btn-sm" data-action="orc-copy" data-what="tools">📋 Copy tools JSON</button></div>`
+    : '<div class="empty-state">Every ingredient stays globally active — nothing worth routing on demand.</div>';
+
+  el.innerHTML = html;
 }
 
 function renderApplySummary() {
@@ -2025,6 +2292,23 @@ function initEvents() {
         case 'fridge-save': saveSessionToFridge(el); break;
         case 'fridge-resume': resumeSaved(el.dataset.id, el); break;
         case 'fridge-apply': pickPresetForSaved(el, el.dataset.id); break;
+        case 'fridge-orchestrate': {
+          const s = S.saved.find(x => x.id === el.dataset.id);
+          if (s && s.presetId) orchestratePreset(s.presetId);
+          else toast('This session has no preset attached — drag one onto the card first', 'error');
+          break;
+        }
+        case 'organize': {
+          const tag = el.dataset.tag;
+          if (el.dataset.scope === 'saved') {
+            const sv = S.saved.find(x => x.id === el.dataset.id);
+            if (sv) organizeOverlap(sessionIngredients(sv).ids, tag, `session "${sv.name}"`);
+          } else {
+            const p = S.presets.find(x => x.id === el.dataset.preset);
+            if (p) organizeOverlap(p.items || [], tag, `preset "${p.name || p.id}"`);
+          }
+          break;
+        }
         case 'fridge-rename': renameSaved(el.dataset.id); break;
         case 'fridge-delete': deleteSaved(el.dataset.id); break;
         case 'apply-preset-session': pickPresetForRunning(el, el.dataset.cwd, el.dataset.sid); break;
@@ -2085,6 +2369,14 @@ function initEvents() {
           else toast('Nothing to copy', 'error');
           break;
         case 'export-download': exportDownload(); break;
+        case 'orchestrate': orchestrate(); break;
+        case 'orc-copy': {
+          const o = S.ui.apply.orc && S.ui.apply.orc.orchestration;
+          if (!o) { toast('Nothing to copy', 'error'); break; }
+          if (el.dataset.what === 'tools') copyText(JSON.stringify(o.orchestration_plan.mcp_tools, null, 2), 'Tools JSON copied 📋');
+          else copyText(orcSystemPrompt(o), 'System prompt copied 📋');
+          break;
+        }
         case 'save-config': saveConfig(el); break;
         case 'sheet-cancel': settlePicker(null); break;
       }
@@ -2158,9 +2450,11 @@ function initEvents() {
     A.projectResult = null;
     A.globalPlan = null;
     A.globalResult = null;
+    A.orc = null;
     renderApplySummary();
     renderModePanel();
     refreshExport();
+    renderOrchestrator();
   });
 
   // Import JSON
