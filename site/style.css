@@ -160,6 +160,37 @@ textarea.input{resize:vertical;min-height:70px}
 .type-tool{background:rgba(57,210,192,.15);color:var(--cyan)}
 .type-plugin{background:rgba(88,166,255,.15);color:var(--accent)}
 .type-cli{background:rgba(247,120,186,.15);color:var(--pink)}
+.add-list{max-height:52vh;overflow-y:auto;margin-top:10px;display:flex;flex-direction:column;gap:6px}
+.add-row{
+  display:flex;flex-direction:column;gap:4px;width:100%;text-align:left;font-family:inherit;
+  padding:10px;border-radius:8px;border:1px solid var(--border);background:var(--bg);color:var(--text);cursor:pointer;
+}
+.add-row:hover{border-color:var(--accent)}
+.col-add-row{padding:0 0 8px}
+.chip-row{display:flex;flex-wrap:wrap;gap:4px}
+.name-chip{
+  font-size:.75em;font-family:inherit;padding:2px 8px;border-radius:10px;
+  background:var(--bg);border:1px solid var(--border);color:var(--text);cursor:pointer;
+}
+.name-chip:hover{border-color:var(--accent);color:var(--accent)}
+.name-chip.off{color:var(--muted);cursor:help;border-style:dashed}
+.name-chip.add{border-style:dashed;color:var(--muted);padding:2px 10px}
+.name-chip.added{border-color:var(--green);color:var(--green);background:rgba(63,185,80,.12)}
+.name-chip.add:hover{color:var(--accent);border-color:var(--accent)}
+/* Hold-to-remove: the fill draining is the 3-second countdown */
+.name-chip[data-hold-saved],.name-chip[data-hold-live]{position:relative;overflow:hidden;user-select:none}
+.name-chip.holding{border-color:var(--red);color:var(--red)}
+.name-chip.holding::after{
+  content:'';position:absolute;inset:0;background:rgba(248,81,73,.35);
+  transform-origin:left;animation:holdfill 3s linear forwards;
+}
+@keyframes holdfill{from{transform:scaleX(0)}to{transform:scaleX(1)}}
+.modal-wide{max-width:720px;width:92vw;max-height:86vh;overflow-y:auto}
+.card-clickable{cursor:pointer;transition:border-color .15s}
+.card-clickable:hover{border-color:var(--accent)}
+.card-clickable a,.card-clickable button{cursor:auto}
+.tag-fridge{background:rgba(57,210,192,.15);color:var(--cyan);border-color:rgba(57,210,192,.4)}
+
 /* Tag-overlap chips + hover card */
 .ov-row-wrap{display:flex;flex-wrap:wrap;gap:6px;margin-top:6px}
 .ov-chip{

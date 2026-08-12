@@ -326,6 +326,27 @@
   </div>
 </div>
 
+<div class="modal-overlay" id="addModal">
+  <div class="modal modal-wide">
+    <h3 id="addTitle">Add ingredient</h3>
+    <input class="input" id="addSearch" type="search" placeholder="Search name · description · tags…" autocomplete="off">
+    <div class="chips" id="addChips"></div>
+    <div id="addList" class="add-list"></div>
+    <div class="modal-actions">
+      <button class="btn" data-action="modal-close" data-modal="addModal">Close</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-overlay" id="detailModal">
+  <div class="modal modal-wide">
+    <div id="detailBody"></div>
+    <div class="modal-actions">
+      <button class="btn" data-action="modal-close" data-modal="detailModal">Close</button>
+    </div>
+  </div>
+</div>
+
 <!-- Confirm Modal -->
 <div class="modal-overlay" id="confirmModal">
   <div class="modal">
