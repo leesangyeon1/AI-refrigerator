@@ -170,6 +170,19 @@
       <div class="mode-cards" id="modeCards"></div>
       <div id="modePanel"></div>
       <div class="panel">
+        <div class="panel-head">
+          <h2>🧠 Skill Orchestrator</h2>
+          <span class="muted small">Deconflict this preset's skills into a layered session context</span>
+        </div>
+        <p class="muted small">Sends the preset's ingredients to your AI CLI, which flags conflicts (e.g. exhaustive docs vs. token minimalism), routes heavy skills to on-demand tools, and splits the rest into a 3-layer system prompt (persona · workflow · output filter).</p>
+        <div class="row-end">
+          <label class="mkt-label" for="orcProvider">AI</label>
+          <select class="input" id="orcProvider" style="max-width:180px;width:auto"><option value="">Auto-detect</option></select>
+          <button class="btn btn-primary" id="orcBtn" data-action="orchestrate">🧠 Orchestrate</button>
+        </div>
+        <div id="orcResults"></div>
+      </div>
+      <div class="panel">
         <div class="panel-head"><h2>📤 Export</h2></div>
         <div class="format-tabs" id="formatTabs"></div>
         <div class="code-wrap"><pre id="exportCode" class="code-view"></pre></div>

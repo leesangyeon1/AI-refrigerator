@@ -733,6 +733,39 @@ async function handleAiClis(res) {
   ok(res, { clis: await detectAiClis(), current: cfg.aiCommand });
 }
 
+// Resolve which AI CLI to run: explicit provider → configured command → first installed
+async function resolveAiCli(cfg, provider) {
+  const detected = await detectAiClis();
+  const reg = AI_CLIS.find((c) => c.id === String(provider || '').trim());
+  if (reg && detected.some((c) => c.id === reg.id && c.available)) return { cmd: reg.cmd, args: reg.args.slice(), name: reg.name };
+  const cfgCmd = cfg.aiCommand || 'claude';
+  if ((await run('which', [cfgCmd], { timeout: 5000 })).ok) {
+    return {
+      cmd: cfgCmd,
+      args: Array.isArray(cfg.aiArgs) ? cfg.aiArgs.map(String) : ['-p'],
+      name: (AI_CLIS.find((c) => c.cmd === cfgCmd) || {}).name || cfgCmd,
+    };
+  }
+  const first = detected.find((c) => c.available);
+  if (!first) return null;
+  const rg = AI_CLIS.find((c) => c.id === first.id);
+  return { cmd: rg.cmd, args: rg.args.slice(), name: rg.name };
+}
+
+const NO_AI_CLI = 'No supported AI CLI found (claude, codex, gemini, cursor-agent, grok, opencode, qwen). Install one or set the command in Settings.';
+
+// Run a prompt through the resolved AI CLI; returns { parsed } or { status, error }
+async function runAiJson(ai, prompt) {
+  const r = await run(ai.cmd, [...ai.args, prompt], { timeout: 180000, maxBuffer: 10 * 1024 * 1024 });
+  if (r.enoent) return { status: 503, error: `AI CLI (${ai.cmd}) not found. Check the command in Settings.` };
+  if (r.timedOut) return { status: 504, error: 'The AI response timed out (3 minutes). Please try again shortly.' };
+  const stdout = r.stdout || '';
+  const parsed = firstJsonBlock(stdout);
+  if (parsed) return { parsed };
+  if (!r.ok) return { status: 502, error: `AI execution failed: ${(r.stderr || stdout || 'Unknown error').trim().slice(0, 200)}` };
+  return { status: 502, error: `Failed to parse AI response: ${stdout.trim().slice(0, 200)}` };
+}
+
 async function handleRecommend(req, res) {
   const body = await readJsonBody(req);
   const goal = String(body.goal || '').trim();
@@ -750,45 +783,10 @@ ${goal}
 Output only the JSON below. No other text:
 {"recommendations":[{"id":"catalog id","reason":"one-line reason"}],"extra":[{"name":"recommendation outside the catalog","type":"skill|mcp|tool","url":"https://...","install":"install command or null","reason":"reason"}],"keywords":["1-3 recommended GitHub search keywords"]}
 recommendations should be 3-8 items, using only ids that actually exist in the catalog.`;
-  // Resolve which AI CLI to use: explicit provider → configured command → first installed
-  const detected = await detectAiClis();
-  const availById = new Map(detected.filter((c) => c.available).map((c) => [c.id, c]));
-  let aiCmd, aiArgs, usedName;
-  const reg = AI_CLIS.find((c) => c.id === String(body.provider || '').trim());
-  if (reg && availById.has(reg.id)) {
-    aiCmd = reg.cmd;
-    aiArgs = reg.args.slice();
-    usedName = reg.name;
-  }
-  if (!aiCmd) {
-    const cfgCmd = cfg.aiCommand || 'claude';
-    if ((await run('which', [cfgCmd], { timeout: 5000 })).ok) {
-      aiCmd = cfgCmd;
-      aiArgs = Array.isArray(cfg.aiArgs) ? cfg.aiArgs.map(String) : ['-p'];
-      usedName = (AI_CLIS.find((c) => c.cmd === cfgCmd) || {}).name || cfgCmd;
-    }
-  }
-  if (!aiCmd) {
-    const first = detected.find((c) => c.available);
-    if (first) {
-      const rg = AI_CLIS.find((c) => c.id === first.id);
-      aiCmd = rg.cmd;
-      aiArgs = rg.args.slice();
-      usedName = rg.name;
-    }
-  }
-  if (!aiCmd) {
-    return fail(res, 503, 'No supported AI CLI found (claude, codex, gemini, cursor-agent, grok, opencode, qwen). Install one or set the command in Settings.');
-  }
-  const r = await run(aiCmd, [...aiArgs, prompt], { timeout: 180000, maxBuffer: 10 * 1024 * 1024 });
-  if (r.enoent) return fail(res, 503, `AI CLI (${aiCmd}) not found. Check the command in Settings.`);
-  if (r.timedOut) return fail(res, 504, 'The AI response timed out (3 minutes). Please try again shortly.');
-  const stdout = r.stdout || '';
-  const parsed = firstJsonBlock(stdout);
-  if (!parsed) {
-    if (!r.ok) return fail(res, 502, `AI execution failed: ${(r.stderr || stdout || 'Unknown error').trim().slice(0, 200)}`);
-    return fail(res, 502, `Failed to parse AI response: ${stdout.trim().slice(0, 200)}`);
-  }
+  const ai = await resolveAiCli(cfg, body.provider);
+  if (!ai) return fail(res, 503, NO_AI_CLI);
+  const { parsed, status, error } = await runAiJson(ai, prompt);
+  if (!parsed) return fail(res, status, error);
   const byId = new Map(items.map((i) => [i.id, i]));
   const recommendations = (Array.isArray(parsed.recommendations) ? parsed.recommendations : [])
     .filter((rec) => rec && typeof rec === 'object' && byId.has(rec.id))
@@ -797,7 +795,170 @@ recommendations should be 3-8 items, using only ids that actually exist in the c
     recommendations,
     extra: Array.isArray(parsed.extra) ? parsed.extra.filter((e) => e && typeof e === 'object') : [],
     keywords: Array.isArray(parsed.keywords) ? parsed.keywords.map(String) : [],
-    usedCli: { cmd: aiCmd, name: usedName },
+    usedCli: { cmd: ai.cmd, name: ai.name },
+  });
+}
+
+// ── Orchestrator: deconflict a preset's skills into a layered session context ──
+const ORCHESTRATOR_PROMPT = `# Role: AI Agentic Skill Deconflicter & Session Orchestrator
+
+You are a Context Engineer. You ingest a set of user-activated skills / plugins / MCP servers / templates for one agentic session, diagnose execution and stylistic conflicts, and re-engineer them into an efficient, accurate, multi-layered context architecture.
+
+## Optimization layers
+1. On-Demand Activation (routing / MCP toolification)
+   Functional, heavy or domain-specific skills (PM analytics, test generation, database indexing, research, media) must NOT stay in the global system prompt. Convert each into a runtime tool with a precise natural-language trigger in "description", so the parent LLM loads it only when the user prompt requires it. This preserves the input token budget.
+2. Multi-Layered Hierarchy (priority layering)
+   Skills that must stay globally active map into a strictly ordered system prompt. LLMs suffer recency bias and prompt dilution, so partition into three rigid layers:
+   - Layer 1 Core Persona: identity, baseline tech stack capability, engineering values.
+   - Layer 2 Execution Workflow: behavioral constraints, step-by-step reasoning protocol, coding discipline (plan-before-code).
+   - Layer 3 Output Post-Processor: formatting, brevity, tone. Compaction skills (caveman and similar) ALWAYS belong here so they act as a final rendering filter without sabotaging Layer 2 reasoning depth.
+3. Conflict Resolution & Semantic Merging
+   Detect outright contradictions between globally active skills (for example exhaustive documentation versus strict verbosity minimalism) and synthesize one balanced instruction that keeps the core functional benefit of both, e.g. "keep the strict planning steps, but condense each milestone to a single five-word micro-bullet".
+
+## Output
+Respond with ONE JSON object and nothing else: no markdown fence, no explanation, no preamble. It must parse with JSON.parse().
+{
+  "conflict_analysis": [
+    {
+      "skills_involved": ["Skill_A", "Skill_B"],
+      "severity": "LOW | MEDIUM | HIGH",
+      "issue": "The architectural or stylistic contradiction and its exact toll on latency or token bloat.",
+      "resolution_strategy": "How the conflict was neutralized via layering or semantic merging."
+    }
+  ],
+  "orchestration_plan": {
+    "mcp_tools": [
+      {
+        "name": "Target skill name",
+        "description": "Exhaustive tool-calling instruction stating exactly when the parent LLM should invoke this skill framework.",
+        "dynamic_injected_prompt": "Condensed functional prompt payload appended to the context ONLY on tool execution."
+      }
+    ],
+    "layered_system_prompt": {
+      "layer_1_core": "Synthesized baseline persona and structural guardrails.",
+      "layer_2_workflow": "Conflict-resolved workflow guidelines, execution steps, engineering discipline.",
+      "layer_3_output_formatter": "Output filters, formatting syntax, text compaction rules, stylistic boundaries."
+    }
+  },
+  "metrics": {
+    "estimated_input_token_reduction_pct": 0,
+    "architectural_efficiency_reasoning": "Why this structure preserves tokens and accuracy."
+  }
+}
+"severity" must be LOW, MEDIUM or HIGH. "estimated_input_token_reduction_pct" must be a number between 0 and 100. Report an empty "conflict_analysis" array when the skills genuinely do not conflict.
+
+## Suspected overlaps
+The input also carries "suspected_overlaps": groups of entries that declare the same tag, computed deterministically before you ran. A shared tag means the same functional niche, across every kind of entry — skill, plugin, MCP server, agent, tool, CLI, template. It is a lead, not a verdict. Adjudicate EVERY group:
+- Same mechanism twice (two compressors, two linters, two doc fetchers): a real conflict. Emit a conflict_analysis entry naming both, and resolve it — keep the stronger one globally, demote the other to an on-demand tool in mcp_tools, or merge them into one instruction.
+- Complementary members of one niche (a design linter plus a deploy plugin, both tagged frontend): NOT a conflict. Do not invent one. Instead assign each to the layer where it fires — identity to layer 1, reasoning and discipline to layer 2, rendering and formatting to layer 3 — so they stack instead of competing, and say so in that layer's text.
+- Every group must end up either in conflict_analysis or resolved silently by layer assignment or toolification. Never drop one because the members merely look similar.
+Entries outside "suspected_overlaps" can still conflict — the tag precheck only catches declared overlaps, so keep scanning names and descriptions for contradictions it missed.`;
+
+// Deterministic precheck: ingredients sharing a tag occupy the same functional niche.
+// Cuts across types on purpose — a skill, a plugin and an MCP server can all be "token" tools.
+function tagCollisions(items) {
+  const byTag = new Map();
+  for (const it of items) {
+    for (const raw of Array.isArray(it.tags) ? it.tags : []) {
+      const tag = String(raw).trim().toLowerCase();
+      if (!tag) continue;
+      if (!byTag.has(tag)) byTag.set(tag, []);
+      byTag.get(tag).push({ name: it.name || it.id, type: it.type || 'item' });
+    }
+  }
+  return [...byTag]
+    .filter(([, members]) => members.length > 1)
+    .map(([tag, members]) => ({ tag, members }))
+    .sort((a, b) => b.members.length - a.members.length);
+}
+
+function orchestrationSkill(it) {
+  const meta = [it.type, ...(Array.isArray(it.tags) ? it.tags : [])].filter(Boolean).join(', ');
+  return {
+    name: it.name || it.id,
+    description: oneLine(it.desc || ''),
+    raw_instruction: oneLine([meta && `type/tags: ${meta}`, it.install && `install: ${it.install}`, it.url].filter(Boolean).join(' | ')),
+  };
+}
+
+// The AI response is untrusted input — normalize to the exact schema the UI renders
+function normalizeOrchestration(p) {
+  const s = (v) => String(v == null ? '' : v);
+  const plan = (p && p.orchestration_plan) || {};
+  const layers = plan.layered_system_prompt || {};
+  const metrics = (p && p.metrics) || {};
+  const pct = Number(metrics.estimated_input_token_reduction_pct);
+  return {
+    conflict_analysis: (Array.isArray(p && p.conflict_analysis) ? p.conflict_analysis : [])
+      .filter((c) => c && typeof c === 'object')
+      .map((c) => {
+        const sev = s(c.severity).toUpperCase();
+        return {
+          skills_involved: Array.isArray(c.skills_involved) ? c.skills_involved.map(s) : [],
+          severity: ['LOW', 'MEDIUM', 'HIGH'].includes(sev) ? sev : 'LOW',
+          issue: s(c.issue),
+          resolution_strategy: s(c.resolution_strategy),
+        };
+      }),
+    orchestration_plan: {
+      mcp_tools: (Array.isArray(plan.mcp_tools) ? plan.mcp_tools : [])
+        .filter((t) => t && typeof t === 'object')
+        .map((t) => ({ name: s(t.name), description: s(t.description), dynamic_injected_prompt: s(t.dynamic_injected_prompt) })),
+      layered_system_prompt: {
+        layer_1_core: s(layers.layer_1_core),
+        layer_2_workflow: s(layers.layer_2_workflow),
+        layer_3_output_formatter: s(layers.layer_3_output_formatter),
+      },
+    },
+    metrics: {
+      estimated_input_token_reduction_pct: Number.isFinite(pct) ? Math.min(100, Math.max(0, Math.round(pct))) : 0,
+      architectural_efficiency_reasoning: s(metrics.architectural_efficiency_reasoning),
+    },
+  };
+}
+
+async function handleOrchestrate(req, res) {
+  const body = await readJsonBody(req);
+  const presetId = String(body.presetId || '');
+  // Keep-both mode: the caller names a tag whose members must all survive
+  const focusTag = String(body.focusTag || '').trim().toLowerCase().slice(0, 40);
+  let cls;
+  if (presetId) {
+    if (!ID_RE.test(presetId)) return fail(res, 400, 'Invalid presetId');
+    const preset = await loadPreset(presetId);
+    if (!preset) return fail(res, 404, `Preset not found: ${presetId}`);
+    cls = classify(preset, await loadMergedCatalog());
+  } else if (Array.isArray(body.itemIds)) {
+    // Ad-hoc set — lets a saved session with no preset be organized too
+    const byId = new Map((await loadMergedCatalog()).map((i) => [i.id, i]));
+    const resolved = [];
+    const missing = [];
+    for (const id of [...new Set(body.itemIds.map(String))].slice(0, 200)) {
+      const it = byId.get(id);
+      if (it) resolved.push(it);
+      else missing.push(id);
+    }
+    cls = { resolved, missing };
+  } else {
+    return fail(res, 400, 'Provide a presetId or itemIds');
+  }
+  if (!cls.resolved.length) return fail(res, 400, 'Nothing to orchestrate — no known ingredients in this set.');
+  const cfg = await loadConfig();
+  const ai = await resolveAiCli(cfg, body.provider);
+  if (!ai) return fail(res, 503, NO_AI_CLI);
+  const suspects = tagCollisions(cls.resolved);
+  const payload = { active_skills: cls.resolved.map(orchestrationSkill), suspected_overlaps: suspects };
+  const focus = focusTag
+    ? `\n\n## KEEP-BOTH DIRECTIVE\nThe user has decided to run EVERY member of the "${focusTag}" overlap group together. Dropping, disabling or demoting any of them is not an option here. Produce a layering that lets them coexist: give each member the layer where it fires, state the precedence when two of them speak at once, and name the one instruction that resolves the friction. Still report the group in conflict_analysis with its true severity, but every resolution_strategy for it must be a coexistence rule, never a removal.`
+    : '';
+  const { parsed, status, error } = await runAiJson(ai, `${ORCHESTRATOR_PROMPT}${focus}\n\n## INPUT\n${JSON.stringify(payload)}\n`);
+  if (!parsed) return fail(res, status, error);
+  ok(res, {
+    orchestration: normalizeOrchestration(parsed),
+    suspects,
+    skillCount: cls.resolved.length,
+    missing: cls.missing,
+    usedCli: { cmd: ai.cmd, name: ai.name },
   });
 }
 
@@ -1800,6 +1961,7 @@ async function handle(req, res) {
   }
   if (method === 'GET' && pathname === '/api/search/skillsmp') return handleSkillsmpSearch(res, (u.searchParams.get('q') || '').trim());
   if (method === 'POST' && pathname === '/api/recommend') return handleRecommend(req, res);
+  if (method === 'POST' && pathname === '/api/orchestrate') return handleOrchestrate(req, res);
   if (method === 'POST' && pathname === '/api/apply') return handleApply(req, res);
   if (method === 'GET' && pathname === '/api/export') {
     return handleExport(res, u.searchParams.get('presetId') || '', u.searchParams.get('format') || '');
