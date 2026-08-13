@@ -65,6 +65,7 @@ const S = {
     view: 'dashboard',
     pantry: { q: '', type: 'all', collapsed: new Set() },
     detail: null,
+    draft: null,
     live: {},
     builder: { q: '', collapsed: new Set() },
     discover: {
@@ -933,7 +934,7 @@ function removePresetItem(presetId, itemId) {
 /* ===== Add ingredient (searchable, every type) ===== */
 // One picker for both targets: a saved session stores names, a preset stores ids.
 function openAdd(target, type) {
-  S.ui.add = { target, q: '', type: type || 'all' };
+  S.ui.add = { target, q: '', type: type || 'all', src: 'fridge', gh: null, ai: null, loading: false };
   const t = $('#addTitle');
   if (t) t.textContent = target.kind === 'saved' ? `Add to "${target.label}"` : `Add to preset "${target.label}"`;
   const box = $('#addSearch');
@@ -961,6 +962,21 @@ function renderAddList() {
   const list = $('#addList');
   const chips = $('#addChips');
   if (!A || !list) return;
+  $$('#addTabs .src-tab').forEach(b => b.classList.toggle('active', b.dataset.src === A.src));
+  const box = $('#addSearch');
+  const go = $('#addGo');
+  if (box) {
+    box.placeholder = A.src === 'fridge' ? 'Search name · description · tags…'
+      : A.src === 'github' ? 'Search GitHub repos (e.g. mcp server)…'
+      : 'Describe what you want to build…';
+  }
+  if (go) {
+    go.classList.toggle('hidden', A.src === 'fridge');
+    go.textContent = A.src === 'ai' ? '🤖 Recommend' : 'Search';
+    go.disabled = A.loading;
+  }
+  if (chips) chips.classList.toggle('hidden', A.src !== 'fridge');
+  if (A.src !== 'fridge') { list.innerHTML = renderAddExternal(A); return; }
   if (chips) {
     chips.innerHTML = ['all', ...TYPE_ORDER]
       .map(t => `<button class="chip ${A.type === t ? 'active' : ''}" data-action="add-type" data-type="${t}">${t === 'all' ? 'All' : esc(TYPE_LABELS[t] || t)}</button>`)
@@ -977,9 +993,89 @@ function renderAddList() {
 }
 
 function addPick(itemId) {
+  addIdToTarget(itemId);
+}
+
+// GitHub hits and AI picks, rendered the same way so the modal feels like one list
+function renderAddExternal(A) {
+  if (A.loading) return loadingBox(A.src === 'ai' ? 'Asking your AI CLI… (up to 2-3 min)' : 'Searching GitHub…');
+  const rows = A.src === 'github' ? (A.gh || []) : (A.ai || []);
+  if (!rows) return '<div class="empty-state">Search failed. Try again.</div>';
+  if (!rows.length) {
+    return `<div class="empty-state">${A.src === 'ai'
+      ? '🤖 Describe your goal above, then hit Recommend.'
+      : 'Search GitHub above to pull in something new.'}</div>`;
+  }
+  return rows.map((r, i) => {
+    const owned = fridgeMatch(r);
+    const url = safeUrl(r.url);
+    return `<button class="add-row" data-action="add-ext" data-idx="${i}">
+      <span class="item-top"><span class="item-name">${esc(r.name || '')}</span>${badge(r.type || 'skill')}</span>
+      <span class="item-desc small">${esc(r.desc || r.reason || '')}</span>
+      <span class="item-meta">
+        ${r.stars ? `<span class="stars">★ ${esc(String(r.stars))}</span>` : ''}
+        ${owned ? IN_FRIDGE_TAG : '<span class="tag">new — will be added to the refrigerator</span>'}
+        ${url ? `<span class="tag">${esc(url.replace(/^https?:\/\//, '').slice(0, 40))}</span>` : ''}
+      </span>
+    </button>`;
+  }).join('');
+}
+
+async function addSearchRun() {
+  const A = S.ui.add;
+  if (!A || A.src === 'fridge' || A.loading) return;
+  const q = ($('#addSearch') && $('#addSearch').value.trim()) || '';
+  if (!q) { toast(A.src === 'ai' ? 'Describe your goal first' : 'Enter a search term', 'error'); return; }
+  A.loading = true;
+  renderAddList();
+  try {
+    if (A.src === 'github') {
+      const d = await api('/api/search/github?' + new URLSearchParams({ q, sort: 'stars', range: 'all' }).toString());
+      A.gh = d.results || [];
+    } else {
+      const d = await api('/api/recommend', { method: 'POST', body: { goal: q } });
+      // Catalog picks carry their item; beyond-catalog ones arrive as bare suggestions
+      A.ai = [
+        ...(d.recommendations || []).map(r => ({ ...(r.item || S.itemMap.get(r.id) || {}), reason: r.reason })),
+        ...(d.extra || []),
+      ].filter(r => r && (r.name || r.id));
+    }
+  } catch {
+    if (A.src === 'github') A.gh = null; else A.ai = null;
+  }
+  A.loading = false;
+  renderAddList();
+}
+
+// An external pick joins the refrigerator first, then the target
+async function addExtPick(idx) {
+  const A = S.ui.add;
+  if (!A) return;
+  const r = (A.src === 'github' ? A.gh : A.ai)[idx];
+  if (!r) return;
+  const owned = fridgeMatch(r);
+  if (owned) { addIdToTarget(owned.id); return; }
+  // AI suggestions outside the catalog arrive without an id — mint one from the name
+  const withId = { ...r, id: r.id || ('x-' + (kebab(r.name) || Date.now().toString(36))) };
+  if (!await addExtToCatalog(withId, withId.type || 'skill')) return;   // reloads the catalog itself
+  const nowOwned = fridgeMatch(withId) || S.itemMap.get(withId.id);
+  if (nowOwned) addIdToTarget(nowOwned.id);
+  renderAddList();
+}
+
+// Put a catalog id into whatever the modal is filling: draft, live session,
+// saved session or preset. External results land here once they're in the fridge.
+function addIdToTarget(itemId) {
   const A = S.ui.add;
   const item = S.itemMap.get(itemId);
   if (!A || !item) return;
+  if (A.target.kind === 'draft') {
+    if (!S.ui.draft.items.includes(item.id)) S.ui.draft.items.push(item.id);
+    A.target.have = [...(A.target.have || []), item.id];
+    renderDraft();
+    renderAddList();
+    return;
+  }
   if (A.target.kind === 'live') {
     liveAdd(A.target.id, item.id);
     A.target.have = [...(A.target.have || []), item.id];
@@ -1914,6 +2010,88 @@ function switchToGithubSearch(q) {
   if (q) ghSearch();
 }
 
+/* ===== Build preset from a prompt ===== */
+// Same AI call as the recommendations tab, but the result lands in an editable
+// draft instead of a read-only list — nothing is written until you save.
+async function buildPreset() {
+  const goal = $('#aiGoal').value.trim();
+  if (!goal) { toast('Describe what you want to build first', 'error'); return; }
+  const D = S.ui.discover;
+  if (D.aiLoading) return;
+  const provider = ($('#aiProvider') && $('#aiProvider').value) || '';
+  D.aiLoading = true;
+  D.buildMode = true;
+  renderAiResults();
+  try {
+    const d = await api('/api/recommend', { method: 'POST', body: { goal, provider } });
+    D.ai = d;
+    S.ui.draft = {
+      goal,
+      items: (d.recommendations || []).map(r => r.id).filter(id => S.itemMap.has(id)),
+      reasons: Object.fromEntries((d.recommendations || []).map(r => [r.id, r.reason || ''])),
+      extra: d.extra || [],
+    };
+    if (!S.ui.draft.items.length) toast('The AI returned nothing from your refrigerator — add ingredients manually', 'error');
+    showModal('draftModal');
+    renderDraft();
+  } catch { /* toast handled */ }
+  D.aiLoading = false;
+  D.buildMode = false;
+  renderAiResults();
+}
+
+function renderDraft() {
+  const el = $('#draftBody');
+  const D = S.ui.draft;
+  if (!el || !D) return;
+  const overlaps = overlapChips(D.items);
+  el.innerHTML = `<p class="muted small">From: “${esc(D.goal)}”</p>
+    ${overlaps ? `<div class="ov-row-wrap" style="margin:8px 0">${overlaps}</div>` : ''}
+    <div class="add-list">${D.items.length ? D.items.map(id => {
+      const i = S.itemMap.get(id);
+      if (!i) return '';
+      return `<div class="draft-row">
+        <button class="draft-main card-clickable" data-action="detail" data-src="catalog" data-key="${esc(id)}" title="Click for the full description">
+          <span class="item-top"><span class="item-name">${esc(i.name || id)}</span>${badge(i.type)}</span>
+          <span class="item-desc small">${esc(i.desc || '')}</span>
+          ${D.reasons[id] ? `<span class="ai-reason">💡 ${esc(D.reasons[id])}</span>` : ''}
+        </button>
+        <button class="icon-btn" title="Remove from draft" data-action="draft-remove" data-id="${esc(id)}">×</button>
+      </div>`;
+    }).join('') : '<div class="empty-state">Empty draft — use + Add ingredient below.</div>'}</div>
+    ${D.extra.length ? `<div class="muted small" style="margin-top:10px">🌐 Suggested but not in your refrigerator: ${D.extra.map(e => esc(e.name || '')).join(', ')} — add them in the Discover tab first.</div>` : ''}`;
+}
+
+function draftRemove(id) {
+  const D = S.ui.draft;
+  if (!D) return;
+  D.items = D.items.filter(x => x !== id);
+  renderDraft();
+}
+
+async function saveDraftPreset() {
+  const D = S.ui.draft;
+  if (!D) return;
+  if (!D.items.length) { toast('Add at least one ingredient first', 'error'); return; }
+  const name = await openPrompt({ title: '🍳 Save as preset', label: 'Preset name', value: D.goal.slice(0, 40) });
+  if (name === null) return;
+  const trimmed = name.trim();
+  if (!trimmed) { toast('Name is required', 'error'); return; }
+  const id = slugPresetId(trimmed);
+  const now = new Date().toISOString();
+  try {
+    await api('/api/presets/' + encodeURIComponent(id), {
+      method: 'PUT',
+      body: { id, name: trimmed, emoji: '🤖', description: D.goal.slice(0, 200), items: [...D.items], createdAt: now, updatedAt: now },
+    });
+    hideModal('draftModal');
+    S.ui.draft = null;
+    await reloadPresets();
+    toast(`🍳 "${trimmed}" preset created`);
+    location.hash = '#builder';
+  } catch { /* toast handled */ }
+}
+
 async function aiRecommend() {
   const goal = $('#aiGoal').value.trim();
   if (!goal) { toast('Describe what you want to build first', 'error'); return; }
@@ -1935,9 +2113,11 @@ function renderAiResults() {
   const D = S.ui.discover;
   const btn = $('#aiBtn');
   if (btn) btn.disabled = D.aiLoading;
+  const bbtn = $('#buildBtn');
+  if (bbtn) bbtn.disabled = D.aiLoading;
   if (D.aiLoading) {
     el.innerHTML = `<div class="loading-box"><span class="spinner"></span>
-      <span><strong>Analyzing with your AI CLI… (up to 2-3 min)</strong><br>
+      <span><strong>${D.buildMode ? 'Building a draft preset with your AI CLI… (up to 2-3 min)' : 'Analyzing with your AI CLI… (up to 2-3 min)'}</strong><br>
       <span class="muted">Scanning the whole catalog to pick combos that fit your goal.</span></span></div>`;
     return;
   }
@@ -1956,7 +2136,7 @@ function renderAiResults() {
     const i = r.item || S.itemMap.get(r.id);
     if (!i) return '';
     const url = safeUrl(i.url);
-    return `<div class="item-card">
+    return `<div class="item-card card-clickable" data-action="detail" data-src="catalog" data-key="${esc(r.id)}" title="Click for the full description">
       <div class="item-top">
         <span class="item-name">${url ? `<a href="${esc(url)}" target="_blank" rel="noopener">${esc(i.name || r.id)}</a>` : esc(i.name || r.id)}</span>
         ${badge(i.type)}
@@ -1964,7 +2144,10 @@ function renderAiResults() {
       <div class="item-desc">${esc(i.desc || '')}</div>
       <div class="item-meta">${IN_FRIDGE_TAG}</div>
       <div class="ai-reason">💡 ${esc(r.reason || '')}</div>
-      <div class="item-actions"><button class="btn btn-sm" data-action="add-to-preset" data-id="${esc(r.id)}">🍳 Add to preset</button></div>
+      <div class="item-actions">
+        <button class="btn btn-sm" data-action="add-to-preset" data-id="${esc(r.id)}">🍳 Add to preset</button>
+        <button class="btn btn-sm" data-action="detail" data-src="catalog" data-key="${esc(r.id)}">📖 Details</button>
+      </div>
     </div>`;
   }).join('') + '</div>' : '<div class="empty-state">No recommendations from the catalog.</div>';
   html += '</div>';
@@ -1972,7 +2155,7 @@ function renderAiResults() {
     html += `<div class="panel"><div class="panel-head"><h2>🌐 Recommendations beyond the catalog (${extra.length})</h2></div><div class="card-grid" style="padding:0">`;
     html += extra.map((r, i) => {
       const url = safeUrl(r.url);
-      return `<div class="item-card">
+      return `<div class="item-card card-clickable" data-action="detail" data-src="extra" data-key="${i}" title="Click for the full description">
         <div class="item-top">
           <span class="item-name">${url ? `<a href="${esc(url)}" target="_blank" rel="noopener">${esc(r.name || '')}</a>` : esc(r.name || '')}</span>
           ${badge(r.type || 'tool')}
@@ -2709,6 +2892,9 @@ function initEvents() {
           break;
         }
         case 'add-type': S.ui.add.type = el.dataset.type; renderAddList(); break;
+        case 'add-src': S.ui.add.src = el.dataset.src; renderAddList(); break;
+        case 'add-go': addSearchRun(); break;
+        case 'add-ext': addExtPick(+el.dataset.idx); break;
         case 'add-pick': addPick(el.dataset.id); break;
         case 'chip-save-first': saveSessionToFridge(el); break;
         case 'live-add': {
@@ -2741,6 +2927,10 @@ function initEvents() {
         case 'fallback-gh': switchToGithubSearch(el.dataset.q || ''); break;
         case 'keyword': switchToGithubSearch(el.dataset.q || ''); break;
         case 'ai-recommend': aiRecommend(); break;
+        case 'build-preset': buildPreset(); break;
+        case 'draft-remove': draftRemove(el.dataset.id); break;
+        case 'draft-add': openAdd({ kind: 'draft', id: 'draft', label: 'draft preset', have: [...(S.ui.draft ? S.ui.draft.items : [])] }, 'all'); break;
+        case 'draft-save': saveDraftPreset(); break;
         case 'ext-fridge': extAddFridge(el, el.dataset.src, +el.dataset.idx); break;
         case 'ext-preset': extAddPreset(el, el.dataset.src, +el.dataset.idx); break;
         case 'mode-card': S.ui.apply.mode = el.dataset.mode; renderModeCards(); renderModePanel(); break;
@@ -2803,7 +2993,10 @@ function initEvents() {
 
   // Search/input
   $('#pantrySearch').addEventListener('input', e => { S.ui.pantry.q = e.target.value; renderPantryList(); });
-  $('#addSearch').addEventListener('input', e => { if (S.ui.add) { S.ui.add.q = e.target.value; renderAddList(); } });
+  $('#addSearch').addEventListener('input', e => {
+    if (S.ui.add && S.ui.add.src === 'fridge') { S.ui.add.q = e.target.value; renderAddList(); }
+  });
+  $('#addSearch').addEventListener('keydown', e => { if (e.key === 'Enter') addSearchRun(); });
   $('#builderSearch').addEventListener('input', e => { S.ui.builder.q = e.target.value; renderBuilderPantry(); });
   $('#ghQuery').addEventListener('keydown', e => { if (e.key === 'Enter') ghSearch(); });
   $('#smpQuery').addEventListener('keydown', e => { if (e.key === 'Enter') smpSearch(); });

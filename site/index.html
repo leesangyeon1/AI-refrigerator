@@ -153,6 +153,7 @@
             <label class="mkt-label" for="aiProvider">AI</label>
             <select class="input" id="aiProvider" style="max-width:180px;width:auto"><option value="">Auto-detect</option></select>
             <button class="btn btn-primary" id="aiBtn" data-action="ai-recommend">🤖 Get Recommendations</button>
+            <button class="btn btn-green" id="buildBtn" data-action="build-preset">🍳 Build preset</button>
           </div>
         </div>
         <div id="aiResults"></div>
@@ -329,11 +330,31 @@
 <div class="modal-overlay" id="addModal">
   <div class="modal modal-wide">
     <h3 id="addTitle">Add ingredient</h3>
-    <input class="input" id="addSearch" type="search" placeholder="Search name · description · tags…" autocomplete="off">
+    <div class="src-tabs" id="addTabs">
+      <button class="src-tab active" data-action="add-src" data-src="fridge">🧊 Refrigerator</button>
+      <button class="src-tab" data-action="add-src" data-src="github">GitHub</button>
+      <button class="src-tab" data-action="add-src" data-src="ai">🤖 AI Recommendations</button>
+    </div>
+    <div class="row">
+      <input class="input grow" id="addSearch" type="search" placeholder="Search name · description · tags…" autocomplete="off">
+      <button class="btn btn-primary hidden" id="addGo" data-action="add-go">Search</button>
+    </div>
     <div class="chips" id="addChips"></div>
     <div id="addList" class="add-list"></div>
     <div class="modal-actions">
       <button class="btn" data-action="modal-close" data-modal="addModal">Close</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-overlay" id="draftModal">
+  <div class="modal modal-wide">
+    <h3>🍳 Draft preset</h3>
+    <div id="draftBody"></div>
+    <div class="modal-actions">
+      <button class="btn" data-action="modal-close" data-modal="draftModal">Cancel</button>
+      <button class="btn" data-action="draft-add">+ Add ingredient</button>
+      <button class="btn btn-primary" data-action="draft-save">🍳 Save as preset</button>
     </div>
   </div>
 </div>

@@ -161,6 +161,11 @@ textarea.input{resize:vertical;min-height:70px}
 .type-plugin{background:rgba(88,166,255,.15);color:var(--accent)}
 .type-cli{background:rgba(247,120,186,.15);color:var(--pink)}
 .add-list{max-height:52vh;overflow-y:auto;margin-top:10px;display:flex;flex-direction:column;gap:6px}
+.draft-row{display:flex;align-items:flex-start;gap:6px}
+.draft-main{
+  flex:1;display:flex;flex-direction:column;gap:4px;text-align:left;font-family:inherit;
+  padding:10px;border-radius:8px;border:1px solid var(--border);background:var(--bg);color:var(--text);
+}
 .add-row{
   display:flex;flex-direction:column;gap:4px;width:100%;text-align:left;font-family:inherit;
   padding:10px;border-radius:8px;border:1px solid var(--border);background:var(--bg);color:var(--text);cursor:pointer;
