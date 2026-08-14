@@ -1,5 +1,7 @@
 .DS_Store
 node_modules/
+# Packaged app bundles — built by scripts/build-app.sh, published as release assets
+dist/
 # User data lives on-device in ~/.ai-refrigerator (never committed).
 # In-repo data/ only ships the built-in catalog used to seed a fresh install.
 /data/*

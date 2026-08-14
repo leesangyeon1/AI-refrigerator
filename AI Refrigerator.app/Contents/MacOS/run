@@ -1,6 +1,12 @@
 #!/bin/bash
 # AI Refrigerator launcher — starts the local server and opens a standalone app window.
-DIR="$(cd "$(dirname "$0")/../../.." && pwd)"
+# Packaged builds carry the app inside the bundle; in a clone it sits three levels up.
+BUNDLE="$(cd "$(dirname "$0")/.." && pwd)"
+if [ -f "$BUNDLE/Resources/app/server.js" ]; then
+  DIR="$BUNDLE/Resources/app"
+else
+  DIR="$(cd "$(dirname "$0")/../../.." && pwd)"
+fi
 cd "$DIR" || exit 1
 PORT="${PORT:-4924}"
 URL="http://127.0.0.1:$PORT"
