@@ -64,6 +64,9 @@ const S = {
   ui: {
     view: 'dashboard',
     pantry: { q: '', type: 'all', collapsed: new Set() },
+    detail: null,
+    draft: null,
+    live: {},
     builder: { q: '', collapsed: new Set() },
     discover: {
       src: 'github',
@@ -405,6 +408,7 @@ async function renderSessions() {
   const el = $('#sessionsList');
   if (!el) return;
   el.innerHTML = loadingBox('Loading sessions…');
+  if (!S.saved.length) { try { await reloadSaved(); } catch { /* ignore */ } }
   let d;
   try {
     d = await api('/api/sessions', { silent: true });
@@ -413,11 +417,12 @@ async function renderSessions() {
     return;
   }
   const running = d.running || [];
+  S.sessions = running;
   const configs = d.configs || [];
   const cnt = $('#sessionCount');
   if (cnt) cnt.textContent = `(${running.length} running)`;
   const chip = (label, arr, cls) => (arr && arr.length) ? `<span class="sum-chip"><span class="badge ${cls}">${label}</span> ${arr.length}</span>` : '';
-  const line = (k, arr) => (arr && arr.length) ? `<div class="kv"><span class="k">${k}</span><span class="muted small">${arr.map(esc).join(', ')}</span></div>` : '';
+  const line = (k, arr, edit) => (arr && arr.length) ? `<div class="kv"><span class="k">${k}</span><span class="chip-row">${nameChips(arr, edit)}</span></div>` : '';
   const chips = (b) => `<div class="sum-chips">${chip('Plugin', b.plugin, 'type-plugin')}${chip('MCP', b.mcp, 'type-mcp')}${chip('Skill', b.skill, 'type-skill')}${chip('Agent', b.agent, 'type-agent')}${chip('CLAUDE.md', b.md, 'type-md')}${chip('Tool', b.tool, 'type-tool')}${chip('CLI', b.cli, 'type-cli')}</div>`;
   const modeBadge = { preset: '🎯 Preset', resume: '↩ Resumed', continue: '▸ Continued', fresh: '✦ New' };
 
@@ -428,6 +433,7 @@ async function renderSessions() {
     const presetId = s.mode === 'preset' && s.settingsPath && s.settingsPath.endsWith('.settings.json')
       ? s.settingsPath.split('/').pop().slice(0, -'.settings.json'.length) : '';
     const defName = s.customLabel || s.presetName || (s.cwd ? s.cwd.split('/').pop() : '') || 'session';
+    const liveLine = (k, arr, type) => `<div class="kv"><span class="k">${k}</span><span class="chip-row">${liveChips(s.pid, type, arr)}</span></div>`;
     return `<div class="item-card sess-drop" style="margin-bottom:8px" data-cwd="${esc(s.cwd || '')}">
       <div class="item-top">
         <span class="item-name">${s.customLabel ? '🏷 ' : '🖥️ '}${esc(s.customLabel || s.presetName || s.label)} <span class="muted small">· pid ${esc(String(s.pid))}</span></span>
@@ -437,7 +443,8 @@ async function renderSessions() {
       <div class="kv"><span class="k">Type</span><span>${esc(modeBadge[s.mode] || 'Session')}${s.resume ? ' <span class="muted small">' + esc(s.resume.slice(0, 12)) + '</span>' : ''}</span></div>
       ${active ? `${chips(b)}
         <div class="kv"><span class="k">Active</span><span>${(b.plugin || []).length} plugin(s) · ${(b.mcp || []).length} MCP · ${(b.skill || []).length} skill(s)</span></div>
-        ${line('Plugins', b.plugin)}${line('MCP', b.mcp)}${line('Skills', b.skill)}${line('Agents', b.agent)}${line('CLAUDE.md', b.md)}`
+        ${liveLine('Plugins', b.plugin, 'plugin')}${liveLine('MCP', b.mcp, 'mcp')}${liveLine('Skills', b.skill, 'skill')}${liveLine('Agents', b.agent, 'agent')}${liveLine('CLAUDE.md', b.md, 'md')}${liveLine('Tools', b.tool, 'tool')}${liveLine('CLI', b.cli, 'cli')}
+        ${liveFooter(s, b)}`
       : `<div class="muted small">No plugins/skills/MCP detected active for this session.</div>`}
       <div class="row-end" style="margin-top:8px;gap:6px">
         <button class="btn btn-sm" data-action="apply-preset-session" data-cwd="${esc(s.cwd || '')}" data-sid="${esc(s.sessionId || '')}">🎯 Apply preset</button>
@@ -481,6 +488,7 @@ async function renderFridge() {
     return;
   }
   const chip = (label, arr, cls) => (arr && arr.length) ? `<span class="sum-chip"><span class="badge ${cls}">${label}</span> ${arr.length}</span>` : '';
+  const line = (k, arr, s, type) => `<div class="kv"><span class="k">${k}</span><span class="chip-row">${nameChips(arr, { savedId: s.id, type })}</span></div>`;
   el.innerHTML = S.saved.map(s => {
     const b = s.breakdown || {};
     const preset = s.presetId ? S.presets.find(p => p.id === s.presetId) : null;
@@ -496,6 +504,7 @@ async function renderFridge() {
       <div class="kv"><span class="k">Preset</span><span>${esc(presetLabel)}</span></div>
       <div class="ov-row-wrap">${overlapChips(ing.ids, s.id)}${coverageNote(ing)}</div>
       <div class="sum-chips">${chip('Plugin', b.plugin, 'type-plugin')}${chip('MCP', b.mcp, 'type-mcp')}${chip('Skill', b.skill, 'type-skill')}${chip('Agent', b.agent, 'type-agent')}${chip('CLAUDE.md', b.md, 'type-md')}</div>
+      ${line('Plugins', b.plugin, s, 'plugin')}${line('MCP', b.mcp, s, 'mcp')}${line('Skills', b.skill, s, 'skill')}
       <div class="row-end" style="margin-top:8px;gap:6px">
         <button class="btn btn-sm btn-primary" data-action="fridge-resume" data-id="${esc(s.id)}">▶ Resume</button>
         <button class="btn btn-sm" data-action="fridge-apply" data-id="${esc(s.id)}">🎯 Preset</button>
@@ -521,7 +530,7 @@ async function renderSavedSessions() {
     return;
   }
   const chip = (label, arr, cls) => (arr && arr.length) ? `<span class="sum-chip"><span class="badge ${cls}">${label}</span> ${arr.length}</span>` : '';
-  const line = (k, arr) => (arr && arr.length) ? `<div class="kv"><span class="k">${k}</span><span class="muted small">${arr.map(esc).join(', ')}</span></div>` : '';
+  const line = (k, arr, s, type) => `<div class="kv"><span class="k">${k}</span><span class="chip-row">${nameChips(arr, { savedId: s.id, type })}</span></div>`;
   el.innerHTML = S.saved.map(s => {
     const b = s.breakdown || {};
     const preset = s.presetId ? S.presets.find(p => p.id === s.presetId) : null;
@@ -539,7 +548,7 @@ async function renderSavedSessions() {
       <div class="kv"><span class="k">Preset</span><span>${presetLabel}</span></div>
       <div class="ov-row-wrap">${overlapChips(ing.ids, s.id)}${coverageNote(ing)}</div>
       <div class="sum-chips">${chip('Plugin', b.plugin, 'type-plugin')}${chip('MCP', b.mcp, 'type-mcp')}${chip('Skill', b.skill, 'type-skill')}${chip('Agent', b.agent, 'type-agent')}${chip('CLAUDE.md', b.md, 'type-md')}${chip('Tool', b.tool, 'type-tool')}${chip('CLI', b.cli, 'type-cli')}</div>
-      ${line('Plugins', b.plugin)}${line('MCP', b.mcp)}${line('Skills', b.skill)}${line('Agents', b.agent)}
+      ${line('Plugins', b.plugin, s, 'plugin')}${line('MCP', b.mcp, s, 'mcp')}${line('Skills', b.skill, s, 'skill')}${line('Agents', b.agent, s, 'agent')}
       <div class="row-end" style="margin-top:8px;gap:6px">
         <button class="btn btn-sm btn-primary" data-action="fridge-resume" data-id="${esc(s.id)}">▶ Resume</button>
         <button class="btn btn-sm" data-action="fridge-apply" data-id="${esc(s.id)}">🎯 Preset</button>
@@ -552,7 +561,7 @@ async function renderSavedSessions() {
 }
 
 // Refresh both places saved sessions appear: the Dashboard panel and the tab.
-function refreshFridge() { renderFridge(); renderSavedSessions(); }
+function refreshFridge() { renderFridge(); renderSavedSessions(); if (S.ui.view === 'dashboard') renderSessions(); }
 
 async function saveSessionToFridge(el) {
   const cwd = el.dataset.cwd || '';
@@ -756,9 +765,451 @@ function renderPantryList() {
   }).join('');
 }
 
+/* ===== Ingredient details ===== */
+// A search hit and a catalog entry rarely share an id ("gh-owner-repo" vs "caveman"),
+// so the repo URL is what actually identifies the same ingredient.
+function normUrl(u) {
+  return String(u || '').toLowerCase().replace(/^https?:\/\/(www\.)?/, '').replace(/\.git$/, '').replace(/\/+$/, '');
+}
+
+// A session lists what it ran by name ("caveman-review", "ecc@ecc"). Resolve that
+// back to a catalog entry, folding variants onto their family.
+function catalogByName(name) {
+  const n = String(name || '').toLowerCase();
+  if (!n) return null;
+  const hit = (key) => S.catalog.find(i => [i.id, i.plugin, i.name].some(k => k && String(k).toLowerCase() === key));
+  const exact = hit(n);
+  if (exact) return exact;
+  return n.includes('-') ? (hit(n.slice(0, n.indexOf('-'))) || null) : null;
+}
+
+// Names as clickable chips — known ones open their details, unknown ones say why not.
+// On a saved session the chips are editable: hold one for 3s to remove it.
+function nameChips(arr, edit) {
+  // Only a session that exists in the fridge can be edited, so only it gets the
+  // hold affordance — an empty data-hold-saved would still match the listener.
+  const holdAttrs = (edit && edit.savedId) ? ` data-hold-saved="${esc(edit.savedId)}" data-hold-type="${esc(edit.type)}"` : '';
+  const tip = holdAttrs ? ' · hold 3s to remove' : '';
+  const chips = (arr || []).map(n => {
+    const it = catalogByName(n);
+    return it
+      ? `<button class="name-chip" data-action="detail" data-src="catalog" data-key="${esc(it.id)}"${holdAttrs} data-name="${esc(n)}" title="Click for the full description${tip}">${esc(n)}</button>`
+      : `<span class="name-chip off"${holdAttrs} data-name="${esc(n)}" title="Not in your refrigerator — add it as a custom ingredient to get its details${tip}">${esc(n)}</span>`;
+  }).join('');
+  if (edit && edit.savedId) {
+    return chips + `<button class="name-chip add" data-action="chip-add" data-id="${esc(edit.savedId)}" data-type="${esc(edit.type)}" title="Add any ingredient — skill, plugin, MCP, tool, CLAUDE.md…">+</button>`;
+  }
+  if (edit && edit.pending) {
+    const p = edit.pending;
+    return chips + `<button class="name-chip add" data-action="chip-save-first" data-cwd="${esc(p.cwd || '')}" data-sid="${esc(p.sid || '')}" data-preset="${esc(p.presetId || '')}" data-name="${esc(p.name || '')}" title="A running session's ingredients can't be changed in place — save it to the fridge to edit them">🧊 +</button>`;
+  }
+  return chips;
+}
+
+/* ===== Editing a saved session's ingredients ===== */
+const HOLD_MS = 3000;
+let holdTimer = null;
+let holdEl = null;
+
+function cancelHold() {
+  if (holdTimer) clearTimeout(holdTimer);
+  holdTimer = null;
+  if (holdEl) holdEl.classList.remove('holding');
+  holdEl = null;
+}
+
+function startHold(el) {
+  cancelHold();
+  holdEl = el;
+  el.classList.add('holding');
+  holdTimer = setTimeout(() => {
+    const target = holdEl;
+    cancelHold();
+    if (!target) return;
+    if (target.dataset.holdLive) liveRemove(target.dataset.holdLive, target.dataset.name);
+    else if (target.dataset.holdPreset) removePresetItem(target.dataset.holdPreset, target.dataset.holdItem);
+    else removeSavedEntry(target.dataset.holdSaved, target.dataset.holdType, target.dataset.name);
+  }, HOLD_MS);
+}
+
+async function saveBreakdown(id, breakdown, msg) {
+  try {
+    await api(`/api/sessions/saved/${encodeURIComponent(id)}`, { method: 'PUT', body: { breakdown } });
+    toast(msg);
+    refreshFridge();
+  } catch { /* toast handled */ }
+}
+
+function removeSavedEntry(id, type, name) {
+  const s = S.saved.find(x => x.id === id);
+  if (!s) return;
+  const b = { ...(s.breakdown || {}) };
+  b[type] = (b[type] || []).filter(n => n !== name);
+  saveBreakdown(id, b, `Removed ${name}`);
+}
+
+/* ===== Live session drafts =====
+   A running process can't be mutated, so edits are staged per pid and become real
+   when applied: the apply writes session config and hands back the launch command. */
+function liveDraft(pid) {
+  if (!S.ui.live[pid]) S.ui.live[pid] = { added: [], removed: [], result: null };
+  return S.ui.live[pid];
+}
+
+function liveHasChanges(pid) {
+  const d = S.ui.live[pid];
+  return Boolean(d && (d.added.length || d.removed.length));
+}
+
+// Effective names for one breakdown row after staged edits
+function liveNames(pid, type, arr) {
+  const d = liveDraft(pid);
+  const kept = (arr || []).filter(n => !d.removed.includes(n));
+  const added = d.added.map(id => S.itemMap.get(id)).filter(i => i && (i.type || 'tool') === type).map(i => i.name || i.id);
+  return { kept, added };
+}
+
+// Everything the session would carry, as catalog ids
+function liveItemIds(pid, breakdown) {
+  const d = liveDraft(pid);
+  const ids = Object.values(breakdown || {}).flat()
+    .filter(n => !d.removed.includes(n))
+    .map(n => { const it = catalogByName(n); return it && it.id; })
+    .filter(Boolean);
+  return [...new Set([...ids, ...d.added])];
+}
+
+function liveAdd(pid, itemId) {
+  const d = liveDraft(pid);
+  d.added = [...new Set([...d.added, itemId])];
+  d.result = null;
+  renderSessions();
+}
+
+// Removing a staged addition un-stages it; removing an original name records it
+function liveRemove(pid, name) {
+  const d = liveDraft(pid);
+  const it = catalogByName(name);
+  if (it && d.added.includes(it.id)) d.added = d.added.filter(x => x !== it.id);
+  else d.removed = [...new Set([...d.removed, name])];
+  d.result = null;
+  renderSessions();
+}
+
+function liveReset(pid) {
+  delete S.ui.live[pid];
+  renderSessions();
+}
+
+async function applyLiveSession(el, pid, cwd, sid, label, breakdown) {
+  const ids = liveItemIds(pid, breakdown);
+  if (!ids.length) { toast('Nothing to apply — the session has no known ingredients', 'error'); return; }
+  try {
+    setBusy(el, true, 'Applying…');
+    liveDraft(pid).result = await api('/api/apply', {
+      method: 'POST',
+      body: { mode: 'session', itemIds: ids, label, cwd: cwd || undefined, sessionId: sid || undefined },
+    });
+    toast('🎯 Session config generated — run the command to apply it');
+    renderSessions();
+  } catch { /* toast handled */ }
+  finally { setBusy(el, false); }
+}
+
+// A running session is editable only through its fridge entry — match on folder + id
+function savedForRunning(s) {
+  return S.saved.find(x => x.cwd && x.cwd === s.cwd && (!s.sessionId || !x.sessionId || x.sessionId === s.sessionId)) || null;
+}
+
+function removePresetItem(presetId, itemId) {
+  const p = S.presets.find(x => x.id === presetId);
+  if (!p) return;
+  const it = S.itemMap.get(itemId);
+  p.items = (p.items || []).filter(x => x !== itemId);
+  schedulePresetSave(p.id);
+  renderBuilderCols();
+  toast(`Removed ${(it && it.name) || itemId}`);
+}
+
+/* ===== Add ingredient (searchable, every type) ===== */
+// One picker for both targets: a saved session stores names, a preset stores ids.
+function openAdd(target, type) {
+  S.ui.add = { target, q: '', type: type || 'all', src: 'fridge', gh: null, ai: null, loading: false };
+  const t = $('#addTitle');
+  if (t) t.textContent = target.kind === 'saved' ? `Add to "${target.label}"` : `Add to preset "${target.label}"`;
+  const box = $('#addSearch');
+  if (box) box.value = '';
+  showModal('addModal');
+  renderAddList();
+  if (box) box.focus();
+}
+
+function addCandidates() {
+  const A = S.ui.add;
+  if (!A) return [];
+  const q = A.q.trim().toLowerCase();
+  const have = new Set(A.target.have || []);
+  return S.catalog.filter(i => {
+    if (A.type !== 'all' && (i.type || 'tool') !== A.type) return false;
+    if (have.has(A.target.kind === 'saved' ? (i.name || i.id) : i.id)) return false;
+    if (!q) return true;
+    return `${i.name} ${i.id} ${i.desc} ${(i.tags || []).join(' ')}`.toLowerCase().includes(q);
+  });
+}
+
+function renderAddList() {
+  const A = S.ui.add;
+  const list = $('#addList');
+  const chips = $('#addChips');
+  if (!A || !list) return;
+  $$('#addTabs .src-tab').forEach(b => b.classList.toggle('active', b.dataset.src === A.src));
+  const box = $('#addSearch');
+  const go = $('#addGo');
+  if (box) {
+    box.placeholder = A.src === 'fridge' ? 'Search name · description · tags…'
+      : A.src === 'github' ? 'Search GitHub repos (e.g. mcp server)…'
+      : 'Describe what you want to build…';
+  }
+  if (go) {
+    go.classList.toggle('hidden', A.src === 'fridge');
+    go.textContent = A.src === 'ai' ? '🤖 Recommend' : 'Search';
+    go.disabled = A.loading;
+  }
+  if (chips) chips.classList.toggle('hidden', A.src !== 'fridge');
+  if (A.src !== 'fridge') { list.innerHTML = renderAddExternal(A); return; }
+  if (chips) {
+    chips.innerHTML = ['all', ...TYPE_ORDER]
+      .map(t => `<button class="chip ${A.type === t ? 'active' : ''}" data-action="add-type" data-type="${t}">${t === 'all' ? 'All' : esc(TYPE_LABELS[t] || t)}</button>`)
+      .join('');
+  }
+  const items = addCandidates();
+  list.innerHTML = items.length
+    ? items.slice(0, 80).map(i => `<button class="add-row" data-action="add-pick" data-id="${esc(i.id)}">
+        <span class="item-top"><span class="item-name">${esc(i.name || i.id)}</span>${badge(i.type)}</span>
+        <span class="item-desc small">${esc(i.desc || '')}</span>
+        <span class="item-meta">${(i.tags || []).slice(0, 4).map(t => `<span class="tag">#${esc(t)}</span>`).join('')}</span>
+      </button>`).join('') + (items.length > 80 ? `<div class="muted small" style="padding:8px">${items.length - 80} more — refine the search</div>` : '')
+    : '<div class="empty-state">Nothing left to add here. Try another type or add it to the refrigerator first.</div>';
+}
+
+function addPick(itemId) {
+  addIdToTarget(itemId);
+}
+
+// GitHub hits and AI picks, rendered the same way so the modal feels like one list
+function renderAddExternal(A) {
+  if (A.loading) return loadingBox(A.src === 'ai' ? 'Asking your AI CLI… (up to 2-3 min)' : 'Searching GitHub…');
+  const rows = A.src === 'github' ? (A.gh || []) : (A.ai || []);
+  if (!rows) return '<div class="empty-state">Search failed. Try again.</div>';
+  if (!rows.length) {
+    return `<div class="empty-state">${A.src === 'ai'
+      ? '🤖 Describe your goal above, then hit Recommend.'
+      : 'Search GitHub above to pull in something new.'}</div>`;
+  }
+  return rows.map((r, i) => {
+    const owned = fridgeMatch(r);
+    const url = safeUrl(r.url);
+    return `<button class="add-row" data-action="add-ext" data-idx="${i}">
+      <span class="item-top"><span class="item-name">${esc(r.name || '')}</span>${badge(r.type || 'skill')}</span>
+      <span class="item-desc small">${esc(r.desc || r.reason || '')}</span>
+      <span class="item-meta">
+        ${r.stars ? `<span class="stars">★ ${esc(String(r.stars))}</span>` : ''}
+        ${owned ? IN_FRIDGE_TAG : '<span class="tag">new — will be added to the refrigerator</span>'}
+        ${url ? `<span class="tag">${esc(url.replace(/^https?:\/\//, '').slice(0, 40))}</span>` : ''}
+      </span>
+    </button>`;
+  }).join('');
+}
+
+async function addSearchRun() {
+  const A = S.ui.add;
+  if (!A || A.src === 'fridge' || A.loading) return;
+  const q = ($('#addSearch') && $('#addSearch').value.trim()) || '';
+  if (!q) { toast(A.src === 'ai' ? 'Describe your goal first' : 'Enter a search term', 'error'); return; }
+  A.loading = true;
+  renderAddList();
+  try {
+    if (A.src === 'github') {
+      const d = await api('/api/search/github?' + new URLSearchParams({ q, sort: 'stars', range: 'all' }).toString());
+      A.gh = d.results || [];
+    } else {
+      const d = await api('/api/recommend', { method: 'POST', body: { goal: q } });
+      // Catalog picks carry their item; beyond-catalog ones arrive as bare suggestions
+      A.ai = [
+        ...(d.recommendations || []).map(r => ({ ...(r.item || S.itemMap.get(r.id) || {}), reason: r.reason })),
+        ...(d.extra || []),
+      ].filter(r => r && (r.name || r.id));
+    }
+  } catch {
+    if (A.src === 'github') A.gh = null; else A.ai = null;
+  }
+  A.loading = false;
+  renderAddList();
+}
+
+// An external pick joins the refrigerator first, then the target
+async function addExtPick(idx) {
+  const A = S.ui.add;
+  if (!A) return;
+  const r = (A.src === 'github' ? A.gh : A.ai)[idx];
+  if (!r) return;
+  const owned = fridgeMatch(r);
+  if (owned) { addIdToTarget(owned.id); return; }
+  // AI suggestions outside the catalog arrive without an id — mint one from the name
+  const withId = { ...r, id: r.id || ('x-' + (kebab(r.name) || Date.now().toString(36))) };
+  if (!await addExtToCatalog(withId, withId.type || 'skill')) return;   // reloads the catalog itself
+  const nowOwned = fridgeMatch(withId) || S.itemMap.get(withId.id);
+  if (nowOwned) addIdToTarget(nowOwned.id);
+  renderAddList();
+}
+
+// Put a catalog id into whatever the modal is filling: draft, live session,
+// saved session or preset. External results land here once they're in the fridge.
+function addIdToTarget(itemId) {
+  const A = S.ui.add;
+  const item = S.itemMap.get(itemId);
+  if (!A || !item) return;
+  if (A.target.kind === 'draft') {
+    if (!S.ui.draft.items.includes(item.id)) S.ui.draft.items.push(item.id);
+    A.target.have = [...(A.target.have || []), item.id];
+    renderDraft();
+    renderAddList();
+    return;
+  }
+  if (A.target.kind === 'live') {
+    liveAdd(A.target.id, item.id);
+    A.target.have = [...(A.target.have || []), item.id];
+    renderAddList();
+    return;
+  }
+  if (A.target.kind === 'saved') {
+    const s = S.saved.find(x => x.id === A.target.id);
+    if (!s) return;
+    const type = item.type || 'tool';
+    const b = { ...(s.breakdown || {}) };
+    b[type] = [...(b[type] || []), item.name || item.id];
+    A.target.have = [...(A.target.have || []), item.name || item.id];
+    saveBreakdown(A.target.id, b, `Added ${item.name || item.id}`);
+  } else {
+    const p = S.presets.find(x => x.id === A.target.id);
+    if (!p) return;
+    if ((p.items || []).includes(item.id)) return;
+    p.items = [...(p.items || []), item.id];
+    A.target.have = [...(A.target.have || []), item.id];
+    schedulePresetSave(p.id);
+    renderBuilderCols();
+    toast(`Added ${item.name || item.id}`);
+  }
+  renderAddList();
+}
+
+// Live-session row: kept names plus staged additions (green), all hold-removable
+function liveChips(pid, type, arr) {
+  const { kept, added } = liveNames(pid, type, arr);
+  const chip = (n, isNew) => {
+    const it = catalogByName(n);
+    const cls = `name-chip${isNew ? ' added' : ''}${it ? '' : ' off'}`;
+    const detail = it ? ` data-action="detail" data-src="catalog" data-key="${esc(it.id)}"` : '';
+    return `<button class="${cls}"${detail} data-hold-live="${esc(String(pid))}" data-hold-type="${esc(type)}" data-name="${esc(n)}" title="${it ? 'Click for the full description · ' : ''}hold 3s to remove${isNew ? ' · staged, not applied yet' : ''}">${isNew ? '+ ' : ''}${esc(n)}</button>`;
+  };
+  return kept.map(n => chip(n, false)).join('') + added.map(n => chip(n, true)).join('')
+    + `<button class="name-chip add" data-action="live-add" data-pid="${esc(String(pid))}" title="Add any ingredient — skill, plugin, MCP, tool, CLAUDE.md…">+</button>`;
+}
+
+function liveFooter(sess, b) {
+  const pid = sess.pid;
+  const d = S.ui.live[pid];
+  if (!d || (!d.added.length && !d.removed.length && !d.result)) return '';
+  const label = sess.customLabel || sess.presetName || (sess.cwd ? sess.cwd.split('/').pop() : '') || 'session';
+  let html = '';
+  if (d.added.length || d.removed.length) {
+    html += `<div class="warn-box" style="margin-top:8px">
+      ✎ Staged: ${d.added.length} added, ${d.removed.length} removed — not applied yet.
+      <div class="row-end" style="margin-top:6px;gap:6px">
+        <button class="btn btn-sm" data-action="live-reset" data-pid="${esc(String(pid))}">Discard</button>
+        <button class="btn btn-sm btn-primary" data-action="live-apply" data-pid="${esc(String(pid))}" data-cwd="${esc(sess.cwd || '')}" data-sid="${esc(sess.sessionId || '')}" data-label="${esc(label)}">🚀 Apply to session</button>
+      </div>
+    </div>`;
+  }
+  const r = d.result;
+  if (r) {
+    const ni = r.needInstall || [];
+    html += `<div class="result-box ok" style="margin-top:8px">
+      <h4>✅ Session config generated</h4>
+      <div class="kv"><span class="k">Applied</span><span>${esc(String(r.pluginCount ?? 0))} plugin(s) · ${esc(String(r.mcpCount ?? 0))} MCP server(s)</span></div>
+      <div class="code-row"><code>${esc(r.command || '')}</code><button class="btn btn-sm" data-action="copy-text" data-copy="${esc(r.command || '')}">Copy</button></div>
+      <div class="muted small">A running process can't be re-configured in place — run this to continue the session with the new set.</div>
+      ${ni.length ? `<div class="warn-box" style="margin-top:6px">⚠️ ${ni.length} item(s) can't be session-enabled (skills/tools/agents) and need installing: ${ni.map(i => esc(i.name)).join(', ')}. Use the install.sh export.</div>` : ''}
+    </div>`;
+  }
+  return html;
+}
+
+function fridgeMatch(r) {
+  if (!r) return null;
+  if (r.id && S.itemMap.has(r.id)) return S.itemMap.get(r.id);
+  const u = normUrl(r.url);
+  if (!u) return null;
+  return S.catalog.find(i => normUrl(i.url) === u) || null;
+}
+
+const IN_FRIDGE_TAG = '<span class="tag tag-fridge">🧊 In refrigerator</span>';
+
+// Card click → the fuller story: our description plus what the repo's README says
+async function openDetail(source, key) {
+  const item = source === 'catalog' ? S.itemMap.get(key) : getExt(source, +key);
+  if (!item) { toast('Details unavailable', 'error'); return; }
+  S.ui.detail = { item, readme: null, loading: Boolean(safeUrl(item.url)), error: '' };
+  showModal('detailModal');
+  renderDetail();
+  if (!S.ui.detail.loading) return;
+  try {
+    S.ui.detail.readme = await api(`/api/readme?url=${encodeURIComponent(item.url)}`, { silent: true });
+  } catch (e) {
+    S.ui.detail.error = e.message || 'Could not load the README';
+  }
+  S.ui.detail.loading = false;
+  renderDetail();
+}
+
+function renderDetail() {
+  const el = $('#detailBody');
+  const D = S.ui.detail;
+  if (!el || !D) return;
+  const i = D.item;
+  const url = safeUrl(i.url);
+  const owned = fridgeMatch(i);
+  let html = `<div class="item-top" style="margin-bottom:6px">
+      <h3 style="margin:0">${esc(i.name || i.id)}</h3>${badge(i.type || 'skill')}
+    </div>
+    <div class="item-meta" style="margin-bottom:10px">
+      ${i.stars ? `<span class="stars">★ ${esc(i.stars)}</span>` : ''}
+      ${(i.tags || []).map(t => `<span class="tag">#${esc(t)}</span>`).join('')}
+      ${owned ? IN_FRIDGE_TAG : ''}
+      ${url ? `<a href="${esc(url)}" target="_blank" rel="noopener">${esc(url.replace(/^https?:\/\//, ''))} ↗</a>` : ''}
+    </div>
+    ${i.desc ? `<p class="muted">${esc(i.desc)}</p>` : ''}
+    ${i.install ? `<div class="code-row"><code>${esc(i.install)}</code><button class="btn btn-sm" data-action="copy-text" data-copy="${esc(i.install)}">Copy</button></div>` : ''}`;
+
+  if (D.loading) html += loadingBox('Reading the README on GitHub…');
+  else if (D.error) html += `<div class="warn-box">${esc(D.error)}</div>`;
+  else if (D.readme) {
+    if (D.readme.summary) html += `<h4 style="margin:14px 0 4px">📖 What it is</h4><p>${esc(D.readme.summary)}</p>`;
+    for (const s of D.readme.sections || []) {
+      html += `<h4 style="margin:14px 0 4px">${esc(s.title)}</h4><div class="code-wrap"><pre class="code-view small">${esc(s.text)}</pre></div>`;
+    }
+    if (!D.readme.summary && !(D.readme.sections || []).length) {
+      html += '<div class="empty-state">The README had nothing extractable — open the repo above.</div>';
+    }
+  } else if (!url) {
+    html += '<div class="empty-state">No repository link, so there is no README to pull.</div>';
+  }
+  el.innerHTML = html;
+}
+
 function pantryCard(i) {
   const url = safeUrl(i.url);
-  return `<div class="item-card">
+  return `<div class="item-card card-clickable" data-action="detail" data-src="catalog" data-key="${esc(i.id)}" title="Click for the full description">
     ${i.source === 'custom' ? `<button class="icon-btn card-del" title="Delete" data-action="del-custom" data-id="${esc(i.id)}">×</button>` : ''}
     <div class="item-top">
       <span class="item-name">${url ? `<a href="${esc(url)}" target="_blank" rel="noopener">${esc(i.name || i.id)}</a>` : esc(i.name || i.id)}</span>
@@ -1022,6 +1473,7 @@ function renderBuilderCols() {
         <button class="icon-btn" title="Menu" data-action="col-menu" data-preset="${esc(p.id)}">⋯</button>
       </div>
       <div class="preset-col-stats">${stats}${missing ? `<span class="stat-chip warn">⚠ ${missing} missing</span>` : ''}${overlapChips(items)}</div>
+      <div class="col-add-row"><button class="btn btn-sm" data-action="col-add" data-preset="${esc(p.id)}">+ Add ingredient</button></div>
       <div class="drop-zone" data-preset="${esc(p.id)}">
         ${items.length ? clusteredItems(p.id, items, flags) : '<div class="drop-empty">Drag &amp; drop<br>ingredients here</div>'}
       </div>
@@ -1079,7 +1531,7 @@ function colItemHtml(presetId, id, flags) {
     </div>`;
   }
   const clash = (flags && flags.get(id)) || [];
-  return `<div class="col-item dnd-item${clash.length ? ' clash' : ''}" draggable="true" data-id="${esc(id)}" data-source="${esc(presetId)}">
+  return `<div class="col-item dnd-item card-clickable${clash.length ? ' clash' : ''}" draggable="true" data-action="detail" data-src="catalog" data-key="${esc(id)}" title="Click for the full description · hold 3s to remove" data-hold-preset="${esc(presetId)}" data-hold-item="${esc(id)}" data-id="${esc(id)}" data-source="${esc(presetId)}">
     <button class="icon-btn col-remove" title="Remove" data-action="col-remove" data-preset="${esc(presetId)}" data-id="${esc(id)}">×</button>
     <div class="item-top"><span class="item-name">${esc(i.name || i.id)}</span>${badge(i.type)}</div>
     <div class="item-desc small">${esc(i.desc || '')}</div>
@@ -1461,8 +1913,8 @@ function loadingBox(msg) {
 
 function extCard(r, src, idx) {
   const url = safeUrl(r.url);
-  const inFridge = r.id && S.itemMap.has(r.id);
-  return `<div class="item-card">
+  const inFridge = Boolean(fridgeMatch(r));
+  return `<div class="item-card card-clickable" data-action="detail" data-src="${src}" data-key="${idx}" title="Click for the full description">
     <div class="item-top">
       <span class="item-name">${url ? `<a href="${esc(url)}" target="_blank" rel="noopener">${esc(r.name || '')}</a>` : esc(r.name || '')}</span>
       ${badge(r.type || 'skill')}
@@ -1472,7 +1924,7 @@ function extCard(r, src, idx) {
       ${r.stars ? `<span class="stars">★ ${esc(r.stars)}</span>` : ''}
       ${r.forks ? `<span class="tag">⑂ ${esc(r.forks)}</span>` : ''}
       ${r.author ? `<span class="tag">@${esc(r.author)}</span>` : ''}
-      ${inFridge ? '<span class="tag tag-custom">In refrigerator</span>' : ''}
+      ${inFridge ? IN_FRIDGE_TAG : ''}
     </div>
     <div class="item-actions">
       <button class="btn btn-sm" data-action="ext-fridge" data-src="${src}" data-idx="${idx}">🧊 Add to refrigerator</button>
@@ -1558,6 +2010,88 @@ function switchToGithubSearch(q) {
   if (q) ghSearch();
 }
 
+/* ===== Build preset from a prompt ===== */
+// Same AI call as the recommendations tab, but the result lands in an editable
+// draft instead of a read-only list — nothing is written until you save.
+async function buildPreset() {
+  const goal = $('#aiGoal').value.trim();
+  if (!goal) { toast('Describe what you want to build first', 'error'); return; }
+  const D = S.ui.discover;
+  if (D.aiLoading) return;
+  const provider = ($('#aiProvider') && $('#aiProvider').value) || '';
+  D.aiLoading = true;
+  D.buildMode = true;
+  renderAiResults();
+  try {
+    const d = await api('/api/recommend', { method: 'POST', body: { goal, provider } });
+    D.ai = d;
+    S.ui.draft = {
+      goal,
+      items: (d.recommendations || []).map(r => r.id).filter(id => S.itemMap.has(id)),
+      reasons: Object.fromEntries((d.recommendations || []).map(r => [r.id, r.reason || ''])),
+      extra: d.extra || [],
+    };
+    if (!S.ui.draft.items.length) toast('The AI returned nothing from your refrigerator — add ingredients manually', 'error');
+    showModal('draftModal');
+    renderDraft();
+  } catch { /* toast handled */ }
+  D.aiLoading = false;
+  D.buildMode = false;
+  renderAiResults();
+}
+
+function renderDraft() {
+  const el = $('#draftBody');
+  const D = S.ui.draft;
+  if (!el || !D) return;
+  const overlaps = overlapChips(D.items);
+  el.innerHTML = `<p class="muted small">From: “${esc(D.goal)}”</p>
+    ${overlaps ? `<div class="ov-row-wrap" style="margin:8px 0">${overlaps}</div>` : ''}
+    <div class="add-list">${D.items.length ? D.items.map(id => {
+      const i = S.itemMap.get(id);
+      if (!i) return '';
+      return `<div class="draft-row">
+        <button class="draft-main card-clickable" data-action="detail" data-src="catalog" data-key="${esc(id)}" title="Click for the full description">
+          <span class="item-top"><span class="item-name">${esc(i.name || id)}</span>${badge(i.type)}</span>
+          <span class="item-desc small">${esc(i.desc || '')}</span>
+          ${D.reasons[id] ? `<span class="ai-reason">💡 ${esc(D.reasons[id])}</span>` : ''}
+        </button>
+        <button class="icon-btn" title="Remove from draft" data-action="draft-remove" data-id="${esc(id)}">×</button>
+      </div>`;
+    }).join('') : '<div class="empty-state">Empty draft — use + Add ingredient below.</div>'}</div>
+    ${D.extra.length ? `<div class="muted small" style="margin-top:10px">🌐 Suggested but not in your refrigerator: ${D.extra.map(e => esc(e.name || '')).join(', ')} — add them in the Discover tab first.</div>` : ''}`;
+}
+
+function draftRemove(id) {
+  const D = S.ui.draft;
+  if (!D) return;
+  D.items = D.items.filter(x => x !== id);
+  renderDraft();
+}
+
+async function saveDraftPreset() {
+  const D = S.ui.draft;
+  if (!D) return;
+  if (!D.items.length) { toast('Add at least one ingredient first', 'error'); return; }
+  const name = await openPrompt({ title: '🍳 Save as preset', label: 'Preset name', value: D.goal.slice(0, 40) });
+  if (name === null) return;
+  const trimmed = name.trim();
+  if (!trimmed) { toast('Name is required', 'error'); return; }
+  const id = slugPresetId(trimmed);
+  const now = new Date().toISOString();
+  try {
+    await api('/api/presets/' + encodeURIComponent(id), {
+      method: 'PUT',
+      body: { id, name: trimmed, emoji: '🤖', description: D.goal.slice(0, 200), items: [...D.items], createdAt: now, updatedAt: now },
+    });
+    hideModal('draftModal');
+    S.ui.draft = null;
+    await reloadPresets();
+    toast(`🍳 "${trimmed}" preset created`);
+    location.hash = '#builder';
+  } catch { /* toast handled */ }
+}
+
 async function aiRecommend() {
   const goal = $('#aiGoal').value.trim();
   if (!goal) { toast('Describe what you want to build first', 'error'); return; }
@@ -1579,9 +2113,11 @@ function renderAiResults() {
   const D = S.ui.discover;
   const btn = $('#aiBtn');
   if (btn) btn.disabled = D.aiLoading;
+  const bbtn = $('#buildBtn');
+  if (bbtn) bbtn.disabled = D.aiLoading;
   if (D.aiLoading) {
     el.innerHTML = `<div class="loading-box"><span class="spinner"></span>
-      <span><strong>Analyzing with your AI CLI… (up to 2-3 min)</strong><br>
+      <span><strong>${D.buildMode ? 'Building a draft preset with your AI CLI… (up to 2-3 min)' : 'Analyzing with your AI CLI… (up to 2-3 min)'}</strong><br>
       <span class="muted">Scanning the whole catalog to pick combos that fit your goal.</span></span></div>`;
     return;
   }
@@ -1600,14 +2136,18 @@ function renderAiResults() {
     const i = r.item || S.itemMap.get(r.id);
     if (!i) return '';
     const url = safeUrl(i.url);
-    return `<div class="item-card">
+    return `<div class="item-card card-clickable" data-action="detail" data-src="catalog" data-key="${esc(r.id)}" title="Click for the full description">
       <div class="item-top">
         <span class="item-name">${url ? `<a href="${esc(url)}" target="_blank" rel="noopener">${esc(i.name || r.id)}</a>` : esc(i.name || r.id)}</span>
         ${badge(i.type)}
       </div>
       <div class="item-desc">${esc(i.desc || '')}</div>
+      <div class="item-meta">${IN_FRIDGE_TAG}</div>
       <div class="ai-reason">💡 ${esc(r.reason || '')}</div>
-      <div class="item-actions"><button class="btn btn-sm" data-action="add-to-preset" data-id="${esc(r.id)}">🍳 Add to preset</button></div>
+      <div class="item-actions">
+        <button class="btn btn-sm" data-action="add-to-preset" data-id="${esc(r.id)}">🍳 Add to preset</button>
+        <button class="btn btn-sm" data-action="detail" data-src="catalog" data-key="${esc(r.id)}">📖 Details</button>
+      </div>
     </div>`;
   }).join('') + '</div>' : '<div class="empty-state">No recommendations from the catalog.</div>';
   html += '</div>';
@@ -1615,11 +2155,12 @@ function renderAiResults() {
     html += `<div class="panel"><div class="panel-head"><h2>🌐 Recommendations beyond the catalog (${extra.length})</h2></div><div class="card-grid" style="padding:0">`;
     html += extra.map((r, i) => {
       const url = safeUrl(r.url);
-      return `<div class="item-card">
+      return `<div class="item-card card-clickable" data-action="detail" data-src="extra" data-key="${i}" title="Click for the full description">
         <div class="item-top">
           <span class="item-name">${url ? `<a href="${esc(url)}" target="_blank" rel="noopener">${esc(r.name || '')}</a>` : esc(r.name || '')}</span>
           ${badge(r.type || 'tool')}
         </div>
+        ${fridgeMatch(r) ? `<div class="item-meta">${IN_FRIDGE_TAG}</div>` : ''}
         ${r.install ? `<div class="install-code static"><code>${esc(r.install)}</code></div>` : ''}
         <div class="ai-reason">💡 ${esc(r.reason || '')}</div>
         <div class="item-actions"><button class="btn btn-sm" data-action="ext-fridge" data-src="extra" data-idx="${i}">🧊 Add to refrigerator</button></div>
@@ -2278,6 +2819,8 @@ function initEvents() {
     const el = e.target.closest('[data-action]');
     if (el) {
       const a = el.dataset.action;
+      // A card is clickable as a whole, but a link inside it stays a link
+      if (a === 'detail' && e.target.closest('a')) return;
       switch (a) {
         case 'refresh-status':
           (async () => {
@@ -2342,6 +2885,35 @@ function initEvents() {
           break;
         }
         case 'copy-text': copyText(el.dataset.copy || ''); break;
+        case 'detail': openDetail(el.dataset.src, el.dataset.key); break;
+        case 'chip-add': {
+          const sv = S.saved.find(x => x.id === el.dataset.id);
+          if (sv) openAdd({ kind: 'saved', id: sv.id, label: sv.name, have: Object.values(sv.breakdown || {}).flat() }, el.dataset.type);
+          break;
+        }
+        case 'add-type': S.ui.add.type = el.dataset.type; renderAddList(); break;
+        case 'add-src': S.ui.add.src = el.dataset.src; renderAddList(); break;
+        case 'add-go': addSearchRun(); break;
+        case 'add-ext': addExtPick(+el.dataset.idx); break;
+        case 'add-pick': addPick(el.dataset.id); break;
+        case 'chip-save-first': saveSessionToFridge(el); break;
+        case 'live-add': {
+          const sess = (S.sessions || []).find(x => String(x.pid) === el.dataset.pid);
+          const have = sess ? liveItemIds(el.dataset.pid, sess.breakdown) : [];
+          openAdd({ kind: 'live', id: el.dataset.pid, label: 'this session', have }, 'all');
+          break;
+        }
+        case 'live-reset': liveReset(el.dataset.pid); break;
+        case 'live-apply': {
+          const sess = (S.sessions || []).find(x => String(x.pid) === el.dataset.pid);
+          applyLiveSession(el, el.dataset.pid, el.dataset.cwd, el.dataset.sid, el.dataset.label, sess ? sess.breakdown : {});
+          break;
+        }
+        case 'col-add': {
+          const p = S.presets.find(x => x.id === el.dataset.preset);
+          if (p) openAdd({ kind: 'preset', id: p.id, label: p.name || p.id, have: [...(p.items || [])] }, 'all');
+          break;
+        }
         case 'add-to-preset': onAddToPreset(el, el.dataset.id); break;
         case 'del-custom': deleteCustom(el.dataset.id); break;
         case 'new-preset': showModal('presetModal'); $('#npName').focus(); break;
@@ -2355,6 +2927,10 @@ function initEvents() {
         case 'fallback-gh': switchToGithubSearch(el.dataset.q || ''); break;
         case 'keyword': switchToGithubSearch(el.dataset.q || ''); break;
         case 'ai-recommend': aiRecommend(); break;
+        case 'build-preset': buildPreset(); break;
+        case 'draft-remove': draftRemove(el.dataset.id); break;
+        case 'draft-add': openAdd({ kind: 'draft', id: 'draft', label: 'draft preset', have: [...(S.ui.draft ? S.ui.draft.items : [])] }, 'all'); break;
+        case 'draft-save': saveDraftPreset(); break;
         case 'ext-fridge': extAddFridge(el, el.dataset.src, +el.dataset.idx); break;
         case 'ext-preset': extAddPreset(el, el.dataset.src, +el.dataset.idx); break;
         case 'mode-card': S.ui.apply.mode = el.dataset.mode; renderModeCards(); renderModePanel(); break;
@@ -2417,6 +2993,10 @@ function initEvents() {
 
   // Search/input
   $('#pantrySearch').addEventListener('input', e => { S.ui.pantry.q = e.target.value; renderPantryList(); });
+  $('#addSearch').addEventListener('input', e => {
+    if (S.ui.add && S.ui.add.src === 'fridge') { S.ui.add.q = e.target.value; renderAddList(); }
+  });
+  $('#addSearch').addEventListener('keydown', e => { if (e.key === 'Enter') addSearchRun(); });
   $('#builderSearch').addEventListener('input', e => { S.ui.builder.q = e.target.value; renderBuilderPantry(); });
   $('#ghQuery').addEventListener('keydown', e => { if (e.key === 'Enter') ghSearch(); });
   $('#smpQuery').addEventListener('keydown', e => { if (e.key === 'Enter') smpSearch(); });
@@ -2470,6 +3050,14 @@ function initEvents() {
     if (f) restoreFromBackup(f);
   });
   $('#cfgAutoSave').addEventListener('change', e => setAutoSaveMode(e.target.value));
+
+  // Hold a saved-session chip for 3s to remove it
+  document.addEventListener('pointerdown', e => {
+    const chip = e.target.closest('[data-hold-saved],[data-hold-preset],[data-hold-live]');
+    if (chip) startHold(chip);
+  });
+  ['pointerup', 'pointercancel', 'pointerleave', 'dragstart'].forEach(ev =>
+    document.addEventListener(ev, cancelHold, true));
 
   window.addEventListener('hashchange', route);
   initDnd();

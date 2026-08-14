@@ -799,6 +799,87 @@ recommendations should be 3-8 items, using only ids that actually exist in the c
   });
 }
 
+// ── GitHub README: the details behind a catalog card ──────
+function parseRepo(url) {
+  const m = String(url || '').match(/^https?:\/\/(?:www\.)?github\.com\/([^/\s]+)\/([^/\s#?]+)/i);
+  return m ? { owner: m[1], repo: m[2].replace(/\.git$/, '') } : null;
+}
+
+// Markdown that reads as decoration, not content: badges, bare images, HTML tags
+function isNoise(line) {
+  const t = line.trim();
+  if (!t) return true;
+  if (/^<[^>]+>$/.test(t)) return true;
+  return /^[[!]/.test(t) && /(shields\.io|badge|img\.shields|\.svg)/i.test(t);
+}
+
+// First real paragraph + the sections a user actually needs before installing
+function extractReadme(md) {
+  const text = String(md).replace(/<!--[\s\S]*?-->/g, '').replace(/\r/g, '');
+  const lines = text.split('\n');
+  // Walk paragraphs, drop headings/code/badges, keep the first that actually says
+  // something. A one-line centered tagline is decoration, not a description.
+  const paras = [];
+  let buf = [];
+  let fenced = false;
+  for (const line of lines) {
+    if (/^\s*```/.test(line)) { fenced = !fenced; buf = []; continue; }
+    if (fenced) continue;
+    if (/^\s*#{1,6}\s/.test(line) || /^\s*(---|===)/.test(line) || isNoise(line)) {
+      if (buf.length) { paras.push(buf.join(' ')); buf = []; }
+      continue;
+    }
+    buf.push(line.trim());
+  }
+  if (buf.length) paras.push(buf.join(' '));
+  const clean = paras
+    .map((p) => p
+      .replace(/\[!\[[^\]]*\]\([^)]*\)\]\([^)]*\)/g, '') // badge wrapped in a link
+      .replace(/!\[[^\]]*\]\([^)]*\)/g, '')              // plain image
+      .replace(/<[^>]+>/g, '')
+      .replace(/\s+/g, ' ')
+      .trim())
+    .filter(Boolean)
+    // A row of links with almost no prose is navigation (language switchers, TOCs)
+    .filter((p) => {
+      const links = (p.match(/\[[^\]]*\]\([^)]*\)/g) || []).length;
+      return links < 2 || p.replace(/\[[^\]]*\]\([^)]*\)/g, '').trim().length >= 40;
+    });
+  const summary = (clean.find((p) => p.length >= 80) || clean[0] || '').slice(0, 600);
+
+  const wanted = /^\s*#{1,6}\s*.*(install|usage|how to|getting started|quick ?start|stack|requirement|setup|example)/i;
+  const sections = [];
+  for (let i = 0; i < lines.length && sections.length < 4; i++) {
+    if (!wanted.test(lines[i])) continue;
+    const title = lines[i].replace(/^\s*#{1,6}\s*/, '').trim().slice(0, 60);
+    const body = [];
+    for (let j = i + 1; j < lines.length && body.join('\n').length < 700; j++) {
+      if (/^\s*#{1,6}\s/.test(lines[j])) break;
+      if (!body.length && isNoise(lines[j])) continue;
+      body.push(lines[j]);
+    }
+    const t = body.join('\n').replace(/\n{3,}/g, '\n\n').trim();
+    if (t) sections.push({ title, text: t.slice(0, 700) });
+  }
+  return { summary, sections };
+}
+
+async function handleReadme(res, url) {
+  const repo = parseRepo(url);
+  if (!repo) return fail(res, 400, 'Not a GitHub URL — no README to fetch');
+  const cfg = await loadConfig();
+  const headers = { Accept: 'application/vnd.github.raw', 'User-Agent': 'ai-refrigerator' };
+  if (cfg.githubToken) headers.Authorization = `Bearer ${cfg.githubToken}`;
+  try {
+    const r = await fetchWithTimeout(`https://api.github.com/repos/${encodeURIComponent(repo.owner)}/${encodeURIComponent(repo.repo)}/readme`, { headers }, 8000);
+    if (r.status === 404) return fail(res, 404, 'That repository has no README');
+    if (!r.ok) return fail(res, 502, `GitHub responded ${r.status}${r.status === 403 ? ' — rate limited, add a token in Settings' : ''}`);
+    ok(res, { repo: `${repo.owner}/${repo.repo}`, ...extractReadme(await r.text()) });
+  } catch {
+    fail(res, 504, 'Could not reach GitHub');
+  }
+}
+
 // ── Orchestrator: deconflict a preset's skills into a layered session context ──
 const ORCHESTRATOR_PROMPT = `# Role: AI Agentic Skill Deconflicter & Session Orchestrator
 
@@ -966,13 +1047,24 @@ async function handleApply(req, res) {
   const body = await readJsonBody(req);
   const presetId = String(body.presetId || '');
   const mode = String(body.mode || '');
-  if (!ID_RE.test(presetId)) return fail(res, 400, 'Invalid presetId');
-  const preset = await loadPreset(presetId);
-  if (!preset) return fail(res, 404, `Preset not found: ${presetId}`);
   if (!['session', 'project', 'global'].includes(mode)) return fail(res, 400, 'mode must be one of session|project|global');
   const dryRun = body.dryRun === true;
   const items = await loadMergedCatalog();
-  const cls = classify(preset, items);
+  let preset;
+  let cls;
+  if (presetId) {
+    if (!ID_RE.test(presetId)) return fail(res, 400, 'Invalid presetId');
+    preset = await loadPreset(presetId);
+    if (!preset) return fail(res, 404, `Preset not found: ${presetId}`);
+    cls = classify(preset, items);
+  } else if (mode === 'session' && Array.isArray(body.itemIds)) {
+    // A live session edited in place has no preset behind it — apply the raw set
+    const id = `live-${kebab(String(body.label || 'session')) || 'session'}`.slice(0, 64);
+    preset = { id, name: String(body.label || 'Live session'), items: body.itemIds.map(String) };
+    cls = classify(preset, items);
+  } else {
+    return fail(res, 400, 'Provide a presetId, or itemIds with mode=session');
+  }
 
   if (mode === 'session') {
     await fsp.mkdir(SESSION_DIR, { recursive: true });
@@ -1572,6 +1664,17 @@ async function handleSavedSessionUpdate(req, res, id) {
     if (presetId && !(await loadPreset(presetId))) return fail(res, 404, `Preset not found: ${presetId}`);
     sessions[idx].presetId = presetId;
   }
+  if (body.breakdown !== undefined) {
+    if (!body.breakdown || typeof body.breakdown !== 'object') return fail(res, 400, 'breakdown must be an object');
+    const next = emptyBreakdown();
+    for (const type of Object.keys(next)) {
+      const arr = body.breakdown[type];
+      if (arr === undefined) continue;
+      if (!Array.isArray(arr)) return fail(res, 400, `breakdown.${type} must be an array`);
+      next[type] = [...new Set(arr.map((v) => oneLine(String(v)).slice(0, 120)).filter(Boolean))].slice(0, 200);
+    }
+    sessions[idx].breakdown = next;
+  }
   await writeJsonFile(SESSIONS_PATH, sessions);
   ok(res, sessions[idx]);
 }
@@ -1962,6 +2065,7 @@ async function handle(req, res) {
   if (method === 'GET' && pathname === '/api/search/skillsmp') return handleSkillsmpSearch(res, (u.searchParams.get('q') || '').trim());
   if (method === 'POST' && pathname === '/api/recommend') return handleRecommend(req, res);
   if (method === 'POST' && pathname === '/api/orchestrate') return handleOrchestrate(req, res);
+  if (method === 'GET' && pathname === '/api/readme') return handleReadme(res, u.searchParams.get('url') || '');
   if (method === 'POST' && pathname === '/api/apply') return handleApply(req, res);
   if (method === 'GET' && pathname === '/api/export') {
     return handleExport(res, u.searchParams.get('presetId') || '', u.searchParams.get('format') || '');
