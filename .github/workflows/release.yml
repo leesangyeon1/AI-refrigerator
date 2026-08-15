@@ -1,0 +1,65 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  macos-app:
+    name: macOS app
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Build the .app bundle
+        run: bash scripts/build-app.sh
+
+      - name: Verify the packaged app runs on its own
+        run: |
+          cd "dist/AI Refrigerator.app/Contents/Resources/app"
+          PORT=4941 node server.js --no-open &
+          for i in $(seq 1 20); do
+            curl -sf -H 'Host: 127.0.0.1:4941' http://127.0.0.1:4941/api/catalog >/dev/null 2>&1 && break
+            sleep 0.5
+          done
+          fail=0
+          for ep in catalog presets status; do
+            code=$(curl -s -o /dev/null -w '%{http_code}' -H 'Host: 127.0.0.1:4941' http://127.0.0.1:4941/api/$ep)
+            echo "/api/$ep -> $code"
+            [ "$code" = 200 ] || fail=1
+          done
+          exit $fail
+
+      - name: Source archive (Windows / Linux)
+        run: |
+          zip -qry "dist/AI-Refrigerator-source.zip" . \
+            -x '.git/*' 'dist/*' 'site/*' 'node_modules/*'
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ai-refrigerator-macos
+          path: dist/*.zip
+
+      - name: Attach to the release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*.zip
+          generate_release_notes: true
+          body: |
+            ## Download
+
+            - **macOS app** — `AI-Refrigerator-macOS-*.zip`. Unzip, drag to Applications, open it.
+              It is unsigned, so the first launch needs **right-click → Open**, or
+              `xattr -dr com.apple.quarantine "/Applications/AI Refrigerator.app"`.
+            - **Windows / Linux** — `AI-Refrigerator-source.zip`, then `node server.js --app`.
+
+            Requires Node.js 18+. Your presets and sessions live in `~/.ai-refrigerator/`
+            and are untouched by installing or replacing the app.

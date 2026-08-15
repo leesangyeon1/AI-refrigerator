@@ -13,7 +13,17 @@ A local web app that collects Skills / Plugins / MCP servers / Agent repos / CLA
 <!-- Screenshot: dashboard view (docs/screenshot-dashboard.png) -->
 <!-- Screenshot: preset builder drag & drop view (docs/screenshot-builder.png) -->
 
-## ⚡ 30-Second Quickstart
+## ⬇️ Download the app
+
+Grab the latest build from **[Releases](https://github.com/leesangyeon1/AI-refrigerator/releases)** — no clone, no build step.
+
+- **macOS** — `AI-Refrigerator-macOS-*.zip`. Unzip, drag **AI Refrigerator.app** to Applications, launch it from Spotlight or Launchpad like any other app. The whole app lives inside the bundle.
+  The build is unsigned, so the very first launch needs **right-click → Open** (or `xattr -dr com.apple.quarantine "/Applications/AI Refrigerator.app"`).
+- **Windows / Linux** — `AI-Refrigerator-source.zip`, then `node server.js --app`.
+
+Node.js 18+ must be installed; the app says so if it isn't. Your presets and sessions live in `~/.ai-refrigerator/`, so replacing the app never touches them.
+
+## ⚡ 30-Second Quickstart (from source)
 
 ```bash
 git clone https://github.com/leesangyeon1/AI-refrigerator.git
@@ -38,6 +48,14 @@ Or double-click one of these in Finder (macOS):
 - **`AI-Refrigerator.command`** — a double-clickable launcher script.
 
 Both start the local server (if not already running) and open a dedicated app window. Requires a Chromium-family browser (Chrome, Edge, Brave, Vivaldi); otherwise it falls back to your default browser.
+
+### 📦 Build the downloadable app yourself
+
+```bash
+npm run build:app    # → dist/AI Refrigerator.app + dist/AI-Refrigerator-macOS-<version>.zip
+```
+
+The bundle carries its own copy of the server and assets, so it runs from `/Applications` with the repo deleted. Pushing a `v*` tag runs the same script in CI and attaches the zip to a GitHub Release.
 
 ## ✨ Key Features
 

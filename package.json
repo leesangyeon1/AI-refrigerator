@@ -6,7 +6,8 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "app": "node server.js --app"
+    "app": "node server.js --app",
+    "build:app": "bash scripts/build-app.sh"
   },
   "engines": {
     "node": ">=18"
